@@ -101,6 +101,11 @@ class BM25Index:
         self._tokenized: list[list[str]] = []
         self._bm25: BM25Okapi | None = None
 
+    def build(self, ids: list[str], texts: list[str]):
+        self._ids = list(ids)
+        self._tokenized = [text.lower().split() for text in texts]
+        self._bm25 = BM25Okapi(self._tokenized) if self._tokenized else None
+
     def add(self, doc_id: str, text: str):
         self._ids.append(doc_id)
         self._tokenized.append(text.lower().split())
@@ -520,8 +525,7 @@ class MemoryStore:
         # rebuild BM25 from chromadb (always, since BM25 is in-memory)
         if self.collection.count() > 0:
             all_docs = self.collection.get(include=["documents"])
-            for doc_id, doc in zip(all_docs["ids"], all_docs["documents"]):
-                self.bm25.add(doc_id, doc)
+            self.bm25.build(all_docs["ids"], all_docs["documents"])
             print(f"  [bm25] rebuilt index with {len(self.bm25)} chunks")
 
     def _save_state(self):
