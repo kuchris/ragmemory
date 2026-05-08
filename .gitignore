@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .venv/
 novels/
+.playwright-mcp/
 
 # Local secrets
 .env

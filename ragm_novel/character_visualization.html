@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Character Co-occurrence Network</title>
+<link rel="icon" href="data:,">
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1110;
+    --panel: rgba(18, 24, 22, 0.90);
+    --line: #2f3b36;
+    --ink: #eef3ec;
+    --muted: #95a59d;
+    --accent: #d8b45d;
+    --cyan: #6cc7bd;
+    --rose: #e17663;
+    --green: #97c969;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    height: 100vh;
+    overflow: hidden;
+    color: var(--ink);
+    background:
+      radial-gradient(circle at 20% 10%, rgba(108,199,189,0.16), transparent 30rem),
+      radial-gradient(circle at 90% 22%, rgba(225,118,99,0.13), transparent 34rem),
+      linear-gradient(135deg, rgba(216,180,93,0.08) 0 1px, transparent 1px 18px),
+      var(--bg);
+    font-family: "Georgia", "Noto Serif TC", "Times New Roman", serif;
+  }
+
+  #network { width: 100vw; height: 100vh; display: block; }
+
+  .topbar {
+    position: fixed;
+    top: 18px;
+    left: 18px;
+    right: 18px;
+    z-index: 10;
+    display: grid;
+    grid-template-columns: minmax(320px, 1fr) auto;
+    gap: 18px;
+    pointer-events: none;
+  }
+
+  .title, .control-panel, .side-panel {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    box-shadow: 0 22px 60px rgba(0,0,0,0.36);
+    backdrop-filter: blur(12px);
+    pointer-events: auto;
+  }
+
+  .title {
+    padding: 18px 20px;
+  }
+
+  .eyebrow {
+    color: var(--accent);
+    font: 700 11px/1.2 "Consolas", "Courier New", monospace;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+
+  h1 {
+    margin: 7px 0 0;
+    font-size: clamp(28px, 4vw, 56px);
+    line-height: 0.95;
+    letter-spacing: 0;
+  }
+
+  .subtitle {
+    margin-top: 10px;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(90px, 1fr));
+    gap: 8px;
+    min-width: 480px;
+  }
+
+  .metric {
+    border: 1px solid var(--line);
+    background: rgba(8, 12, 11, 0.72);
+    padding: 13px;
+  }
+
+  .metric b {
+    display: block;
+    font: 700 22px/1 "Consolas", "Courier New", monospace;
+  }
+
+  .metric span {
+    display: block;
+    margin-top: 7px;
+    color: var(--muted);
+    font: 700 10px/1.1 "Consolas", "Courier New", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .control-panel {
+    position: fixed;
+    left: 18px;
+    bottom: 18px;
+    z-index: 10;
+    width: 340px;
+    padding: 16px;
+  }
+
+  label {
+    display: block;
+    margin-bottom: 13px;
+    color: var(--muted);
+    font: 700 11px/1.2 "Consolas", "Courier New", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+  }
+
+  input[type="range"], input[type="search"] {
+    width: 100%;
+    margin-top: 8px;
+  }
+
+  input[type="search"] {
+    border: 1px solid var(--line);
+    background: #0a0e0d;
+    color: var(--ink);
+    padding: 10px;
+    font: 14px/1 "Consolas", "Courier New", monospace;
+    outline: none;
+  }
+
+  input[type="search"]:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(216,180,93,0.16);
+  }
+
+  .checks {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+
+  .checks label {
+    margin: 0;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .side-panel {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 10;
+    width: 360px;
+    max-height: 48vh;
+    padding: 16px;
+    overflow: auto;
+  }
+
+  .side-panel h2 {
+    margin: 0 0 10px;
+    font-size: 18px;
+  }
+
+  .side-panel p, .side-panel li {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .side-panel ol {
+    margin: 0;
+    padding-left: 20px;
+  }
+
+  .node circle {
+    stroke: rgba(238,243,236,0.78);
+    stroke-width: 1.2;
+    cursor: pointer;
+  }
+
+  .node text {
+    fill: var(--ink);
+    paint-order: stroke;
+    stroke: rgba(13,17,16,0.88);
+    stroke-width: 4px;
+    font-size: 12px;
+    pointer-events: none;
+  }
+
+  .link {
+    stroke: rgba(148, 181, 172, 0.42);
+    mix-blend-mode: screen;
+  }
+
+  .dimmed { opacity: 0.08 !important; }
+  .hidden { display: none !important; }
+
+  .tooltip {
+    position: fixed;
+    z-index: 30;
+    pointer-events: none;
+    opacity: 0;
+    max-width: 340px;
+    border: 1px solid var(--accent);
+    background: #0a0e0d;
+    color: var(--ink);
+    padding: 12px 14px;
+    box-shadow: 0 18px 44px rgba(0,0,0,0.45);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .tooltip b { color: var(--accent); }
+
+  @media (max-width: 980px) {
+    body { overflow: auto; }
+    #network { height: 900px; }
+    .topbar { position: static; grid-template-columns: 1fr; padding: 14px; }
+    .metrics { min-width: 0; grid-template-columns: repeat(2, 1fr); }
+    .control-panel, .side-panel { position: static; width: auto; margin: 14px; }
+  }
+</style>
+</head>
+<body>
+<svg id="network"></svg>
+
+<div class="topbar">
+  <section class="title">
+    <div class="eyebrow">Character Graph / Co-occurrence</div>
+    <h1>角色共現網絡</h1>
+    <div class="subtitle">角色是節點；兩個角色出現在同一個 chunk，就累加一條共現邊。資料只來自 character_cache.json。</div>
+  </section>
+  <section class="metrics" id="metrics"></section>
+</div>
+
+<section class="control-panel">
+  <label>連結強度下限：<span id="thresholdLabel"></span>
+    <input id="threshold" type="range" min="1" max="80" value="3">
+  </label>
+  <label>顯示角色上限：<span id="topLabel"></span>
+    <input id="topN" type="range" min="20" max="90" value="70">
+  </label>
+  <label>搜尋角色
+    <input id="search" type="search" placeholder="例如：綾小路 / 堀北 / 龍園">
+  </label>
+  <div class="checks">
+    <label><input id="labels" type="checkbox" checked> 顯示名字</label>
+    <label><input id="weakLinks" type="checkbox" checked> 顯示弱連結</label>
+  </div>
+</section>
+
+<section class="side-panel">
+  <h2 id="sideTitle">Top co-occurrence</h2>
+  <div id="sideContent"></div>
+</section>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const rawNodes = [{"id": "\u7dbe\u5c0f\u8def", "count": 2508}, {"id": "\u5800\u5317", "count": 1597}, {"id": "\u9f8d\u5712", "count": 743}, {"id": "\u4e00\u4e4b\u7028", "count": 690}, {"id": "\u9808\u85e4", "count": 643}, {"id": "\u962a\u67f3", "count": 641}, {"id": "\u5e73\u7530", "count": 637}, {"id": "\u6adb\u7530", "count": 632}, {"id": "\u8f15\u4e95\u6fa4", "count": 605}, {"id": "\u8336\u67f1", "count": 394}, {"id": "\u6a4b\u672c", "count": 358}, {"id": "\u9ad8\u5713\u5bfa", "count": 315}, {"id": "\u5357\u4e91", "count": 302}, {"id": "\u5e78\u6751", "count": 300}, {"id": "\u4f50\u5009", "count": 294}, {"id": "\u4f0a\u5439", "count": 290}, {"id": "\u7be0\u539f", "count": 283}, {"id": "\u77f3\u5d0e", "count": 264}, {"id": "\u845b\u57ce", "count": 248}, {"id": "\u4e03\u7028", "count": 219}, {"id": "\u5c71\u5167", "count": 213}, {"id": "\u795e\u5d0e", "count": 211}, {"id": "\u4f50\u85e4", "count": 185}, {"id": "\u5929\u6fa4", "count": 174}, {"id": "\u4e09\u5b85", "count": 170}, {"id": "\u5bf6\u6cc9", "count": 126}, {"id": "\u771f\u5d8b", "count": 124}, {"id": "\u9577\u8c37\u90e8", "count": 122}, {"id": "\u68ee\u4e0b", "count": 122}, {"id": "\u9b3c\u982d", "count": 108}, {"id": "\u5c71\u6751", "count": 103}, {"id": "\u65e5\u548c", "count": 98}, {"id": "\u661f\u4e4b\u5bae", "count": 97}, {"id": "\u6708\u57ce", "count": 97}, {"id": "\u516b\u795e", "count": 85}, {"id": "\u677e\u4e0b", "count": 83}, {"id": "\u963f\u723e\u4f2f\u7279", "count": 77}, {"id": "\u795e\u5ba4", "count": 77}, {"id": "\u5c0f\u7f8e", "count": 77}, {"id": "\u6850\u5c71", "count": 75}, {"id": "\u9b3c\u9f8d\u9662", "count": 73}, {"id": "\u767d\u77f3", "count": 72}, {"id": "\u690e\u540d", "count": 69}, {"id": "\u524d\u5712", "count": 67}, {"id": "\u6e21\u908a", "count": 67}, {"id": "\u5c0f\u5bae", "count": 63}, {"id": "\u7db2\u5009", "count": 62}, {"id": "\u91d1\u7530", "count": 61}, {"id": "\u5c0f\u91ce\u5bfa", "count": 56}, {"id": "\u67f4\u7530", "count": 55}, {"id": "\u5cf6\u5d0e", "count": 54}, {"id": "\u771f\u934b", "count": 52}, {"id": "\u59ec\u91ce", "count": 51}, {"id": "\u672c\u5802", "count": 50}, {"id": "\u962a\u4e0a", "count": 49}, {"id": "\u76f4\u6c5f", "count": 46}, {"id": "\u5409\u7530", "count": 44}, {"id": "\u5b87\u90fd\u5bae", "count": 39}, {"id": "\u771f\u7530", "count": 38}, {"id": "\u6ff1\u53e3", "count": 37}, {"id": "\u6642\u4efb", "count": 37}, {"id": "\u9d28\u5ddd", "count": 37}, {"id": "\u897f\u91ce", "count": 36}, {"id": "\u671d\u6bd4\u5948", "count": 34}, {"id": "\u6adb\u7530\u6a58\u6897", "count": 32}, {"id": "\u5f4c\u5f65", "count": 32}, {"id": "\u753a\u7530", "count": 32}, {"id": "\u6728\u4e0b", "count": 30}, {"id": "\u771f\u6f84", "count": 25}, {"id": "\u7dbe\u5c0f\u8def\u5b78\u9577", "count": 25}, {"id": "\u897f\u5ddd", "count": 24}, {"id": "\u7af9\u672c", "count": 22}, {"id": "\u77f3\u4e0a", "count": 22}, {"id": "\u8fd1\u85e4", "count": 20}, {"id": "\u5916\u6751", "count": 20}, {"id": "\u4f0a\u5439\u6faa", "count": 20}, {"id": "\u77f3\u5009", "count": 19}, {"id": "\u6559\u5b98", "count": 19}, {"id": "\u5800\u5317\u5b78", "count": 18}, {"id": "\u4f0a\u5439\u540c\u5b78", "count": 18}, {"id": "\u4f50\u85e4\u540c\u5b78", "count": 18}, {"id": "\u9234\u61f8", "count": 18}, {"id": "\u7dbe\u5c0f\u8def\u5148\u751f", "count": 17}, {"id": "\u767d\u6ce2", "count": 16}, {"id": "\u5c71\u4e2d", "count": 16}, {"id": "\u5bec\u6cbb", "count": 15}, {"id": "\u4e95\u4e4b\u982d", "count": 14}, {"id": "\u5bae\u672c", "count": 14}, {"id": "\u8863\u7b20", "count": 14}, {"id": "\u7684\u5834", "count": 14}];
+const rawLinks = [{"source": "\u5800\u5317", "target": "\u9808\u85e4", "value": 368}, {"source": "\u5800\u5317", "target": "\u5e73\u7530", "value": 338}, {"source": "\u5800\u5317", "target": "\u6adb\u7530", "value": 368}, {"source": "\u5800\u5317", "target": "\u7dbe\u5c0f\u8def", "value": 779}, {"source": "\u6adb\u7530", "target": "\u7dbe\u5c0f\u8def", "value": 371}, {"source": "\u5800\u5317", "target": "\u9ad8\u5713\u5bfa", "value": 122}, {"source": "\u4e95\u4e4b\u982d", "target": "\u5e73\u7530", "value": 3}, {"source": "\u4e95\u4e4b\u982d", "target": "\u5c71\u5167", "value": 5}, {"source": "\u5c71\u5167", "target": "\u6adb\u7530\u6a58\u6897", "value": 5}, {"source": "\u5800\u5317", "target": "\u5c71\u5167", "value": 102}, {"source": "\u5c71\u5167", "target": "\u5e73\u7530", "value": 62}, {"source": "\u5c71\u5167", "target": "\u9ad8\u5713\u5bfa", "value": 22}, {"source": "\u5e73\u7530", "target": "\u9ad8\u5713\u5bfa", "value": 71}, {"source": "\u5800\u5317", "target": "\u5800\u5317\u5b78", "value": 8}, {"source": "\u5800\u5317\u5b78", "target": "\u7dbe\u5c0f\u8def", "value": 11}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u9808\u85e4", "value": 284}, {"source": "\u5c71\u5167", "target": "\u6adb\u7530", "value": 66}, {"source": "\u5c71\u5167", "target": "\u7dbe\u5c0f\u8def", "value": 127}, {"source": "\u5800\u5317", "target": "\u9577\u8c37\u90e8", "value": 35}, {"source": "\u6adb\u7530", "target": "\u9577\u8c37\u90e8", "value": 20}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u9577\u8c37\u90e8", "value": 55}, {"source": "\u4f50\u5009", "target": "\u5c71\u5167", "value": 56}, {"source": "\u4f50\u5009", "target": "\u6adb\u7530", "value": 70}, {"source": "\u4f50\u5009", "target": "\u7dbe\u5c0f\u8def", "value": 181}, {"source": "\u4f50\u5009", "target": "\u9577\u8c37\u90e8", "value": 20}, {"source": "\u5c71\u5167", "target": "\u9577\u8c37\u90e8", "value": 3}, {"source": "\u4f50\u5009", "target": "\u5800\u5317", "value": 88}, {"source": "\u4f50\u5009", "target": "\u9808\u85e4", "value": 49}, {"source": "\u6adb\u7530", "target": "\u9808\u85e4", "value": 140}, {"source": "\u9577\u8c37\u90e8", "target": "\u9808\u85e4", "value": 8}, {"source": "\u5e73\u7530", "target": "\u6adb\u7530", "value": 145}, {"source": "\u5e73\u7530", "target": "\u7dbe\u5c0f\u8def", "value": 302}, {"source": "\u5e73\u7530", "target": "\u9808\u85e4", "value": 185}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u9ad8\u5713\u5bfa", "value": 114}, {"source": "\u9808\u85e4", "target": "\u9ad8\u5713\u5bfa", "value": 80}, {"source": "\u6adb\u7530", "target": "\u9ad8\u5713\u5bfa", "value": 32}, {"source": "\u5c71\u5167", "target": "\u8f15\u4e95\u6fa4", "value": 28}, {"source": "\u5e73\u7530", "target": "\u677e\u4e0b", "value": 19}, {"source": "\u5e73\u7530", "target": "\u8f15\u4e95\u6fa4", "value": 188}, {"source": "\u677e\u4e0b", "target": "\u8f15\u4e95\u6fa4", "value": 14}, {"source": "\u677e\u4e0b", "target": "\u6adb\u7530", "value": 18}, {"source": "\u677e\u4e0b", "target": "\u7dbe\u5c0f\u8def", "value": 43}, {"source": "\u6adb\u7530", "target": "\u8f15\u4e95\u6fa4", "value": 65}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u8f15\u4e95\u6fa4", "value": 334}, {"source": "\u5c71\u5167", "target": "\u672c\u5802", "value": 6}, {"source": "\u5c71\u5167", "target": "\u8336\u67f1", "value": 19}, {"source": "\u672c\u5802", "target": "\u8336\u67f1", "value": 7}, {"source": "\u5e73\u7530", "target": "\u8336\u67f1", "value": 76}, {"source": "\u8336\u67f1", "target": "\u9ad8\u5713\u5bfa", "value": 28}, {"source": "\u5c71\u5167", "target": "\u9808\u85e4", "value": 85}, {"source": "\u5800\u5317", "target": "\u8f15\u4e95\u6fa4", "value": 170}, {"source": "\u5800\u5317", "target": "\u8336\u67f1", "value": 137}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u8336\u67f1", "value": 167}, {"source": "\u8f15\u4e95\u6fa4", "target": "\u9808\u85e4", "value": 66}, {"source": "\u5bae\u672c", "target": "\u7dbe\u5c0f\u8def", "value": 11}, {"source": "\u5bae\u672c", "target": "\u9808\u85e4", "value": 7}, {"source": "\u4e00\u4e4b\u7028", "target": "\u661f\u4e4b\u5bae", "value": 24}, {"source": "\u4e00\u4e4b\u7028", "target": "\u7dbe\u5c0f\u8def", "value": 387}, {"source": "\u4e00\u4e4b\u7028", "target": "\u8336\u67f1", "value": 24}, {"source": "\u661f\u4e4b\u5bae", "target": "\u7dbe\u5c0f\u8def", "value": 49}, {"source": "\u661f\u4e4b\u5bae", "target": "\u8336\u67f1", "value": 39}, {"source": "\u8336\u67f1", "target": "\u9808\u85e4", "value": 79}, {"source": "\u5e78\u6751", "target": "\u9ad8\u5713\u5bfa", "value": 48}, {"source": "\u5800\u5317", "target": "\u5e78\u6751", "value": 94}, {"source": "\u5e73\u7530", "target": "\u5e78\u6751", "value": 81}, {"source": "\u5e78\u6751", "target": "\u6adb\u7530", "value": 34}, {"source": "\u4e95\u4e4b\u982d", "target": "\u6adb\u7530", "value": 4}, {"source": "\u5800\u5317", "target": "\u6adb\u7530\u6a58\u6897", "value": 20}, {"source": "\u5e73\u7530", "target": "\u6adb\u7530\u6a58\u6897", "value": 6}, {"source": "\u6adb\u7530\u6a58\u6897", "target": "\u9808\u85e4", "value": 8}, {"source": "\u6adb\u7530\u6a58\u6897", "target": "\u7dbe\u5c0f\u8def", "value": 14}, {"source": "\u4f50\u85e4", "target": "\u5800\u5317", "value": 60}, {"source": "\u4f50\u85e4", "target": "\u6adb\u7530", "value": 22}, {"source": "\u4f50\u85e4", "target": "\u7dbe\u5c0f\u8def", "value": 123}, {"source": "\u6adb\u7530", "target": "\u8336\u67f1", "value": 46}, {"source": "\u4f50\u85e4", "target": "\u9808\u85e4", "value": 20}, {"source": "\u5800\u5317", "target": "\u672c\u5802", "value": 19}, {"source": "\u672c\u5802", "target": "\u6adb\u7530", "value": 5}, {"source": "\u672c\u5802", "target": "\u9808\u85e4", "value": 27}, {"source": "\u672c\u5802", "target": "\u7dbe\u5c0f\u8def", "value": 25}, {"source": "\u5800\u5317", "target": "\u5c0f\u5bae", "value": 8}, {"source": "\u5c0f\u5bae", "target": "\u5e73\u7530", "value": 5}, {"source": "\u5c0f\u5bae", "target": "\u6adb\u7530", "value": 3}, {"source": "\u5c0f\u5bae", "target": "\u7dbe\u5c0f\u8def", "value": 26}, {"source": "\u6adb\u7530\u6a58\u6897", "target": "\u8336\u67f1", "value": 3}, {"source": "\u5c0f\u5bae", "target": "\u77f3\u5d0e", "value": 21}, {"source": "\u5c0f\u5bae", "target": "\u8fd1\u85e4", "value": 15}, {"source": "\u5c0f\u5bae", "target": "\u9808\u85e4", "value": 15}, {"source": "\u77f3\u5d0e", "target": "\u8fd1\u85e4", "value": 10}, {"source": "\u77f3\u5d0e", "target": "\u9808\u85e4", "value": 18}, {"source": "\u8fd1\u85e4", "target": "\u9808\u85e4", "value": 3}, {"source": "\u8336\u67f1", "target": "\u8f15\u4e95\u6fa4", "value": 19}, {"source": "\u4f50\u5009", "target": "\u5e73\u7530", "value": 35}, {"source": "\u4e00\u4e4b\u7028", "target": "\u5800\u5317", "value": 243}, {"source": "\u4e00\u4e4b\u7028", "target": "\u9808\u85e4", "value": 51}, {"source": "\u5800\u5317", "target": "\u661f\u4e4b\u5bae", "value": 31}, {"source": "\u4f50\u5009", "target": "\u8f15\u4e95\u6fa4", "value": 30}, {"source": "\u4e00\u4e4b\u7028", "target": "\u5e73\u7530", "value": 59}, {"source": "\u4e00\u4e4b\u7028", "target": "\u6adb\u7530", "value": 50}, {"source": "\u4e00\u4e4b\u7028", "target": "\u8f15\u4e95\u6fa4", "value": 96}, {"source": "\u4e00\u4e4b\u7028", "target": "\u795e\u5d0e", "value": 137}, {"source": "\u5e73\u7530", "target": "\u795e\u5d0e", "value": 30}, {"source": "\u6adb\u7530", "target": "\u795e\u5d0e", "value": 8}, {"source": "\u795e\u5d0e", "target": "\u7dbe\u5c0f\u8def", "value": 110}, {"source": "\u795e\u5d0e", "target": "\u9808\u85e4", "value": 19}, {"source": "\u4e00\u4e4b\u7028", "target": "\u77f3\u5d0e", "value": 29}, {"source": "\u77f3\u5d0e", "target": "\u795e\u5d0e", "value": 11}, {"source": "\u77f3\u5d0e", "target": "\u7dbe\u5c0f\u8def", "value": 124}, {"source": "\u4e00\u4e4b\u7028", "target": "\u4f50\u5009", "value": 35}, {"source": "\u4f50\u5009", "target": "\u795e\u5d0e", "value": 17}, {"source": "\u4f50\u5009", "target": "\u8336\u67f1", "value": 16}, {"source": "\u5916\u6751", "target": "\u7dbe\u5c0f\u8def", "value": 9}, {"source": "\u661f\u4e4b\u5bae", "target": "\u9808\u85e4", "value": 4}, {"source": "\u5800\u5317", "target": "\u962a\u4e0a", "value": 16}, {"source": "\u8336\u67f1", "target": "\u962a\u4e0a", "value": 16}, {"source": "\u962a\u4e0a", "target": "\u9808\u85e4", "value": 8}, {"source": "\u5800\u5317", "target": "\u8fd1\u85e4", "value": 3}, {"source": "\u5800\u5317", "target": "\u77f3\u5d0e", "value": 31}, {"source": "\u4f50\u5009", "target": "\u962a\u4e0a", "value": 4}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u962a\u4e0a", "value": 21}, {"source": "\u5800\u5317", "target": "\u795e\u5d0e", "value": 56}, {"source": "\u6adb\u7530", "target": "\u77f3\u5d0e", "value": 5}, {"source": "\u4e00\u4e4b\u7028", "target": "\u5c0f\u5bae", "value": 7}, {"source": "\u4e00\u4e4b\u7028", "target": "\u8fd1\u85e4", "value": 5}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u8fd1\u85e4", "value": 9}, {"source": "\u4e00\u4e4b\u7028", "target": "\u9f8d\u5712", "value": 137}, {"source": "\u4f50\u5009", "target": "\u9f8d\u5712", "value": 17}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u9f8d\u5712", "value": 359}, {"source": "\u4e00\u4e4b\u7028", "target": "\u962a\u4e0a", "value": 5}, {"source": "\u771f\u5d8b", "target": "\u8336\u67f1", "value": 54}, {"source": "\u5800\u5317", "target": "\u7be0\u539f", "value": 95}, {"source": "\u5e73\u7530", "target": "\u7be0\u539f", "value": 67}, {"source": "\u7be0\u539f", "target": "\u8336\u67f1", "value": 28}, {"source": "\u7be0\u539f", "target": "\u8f15\u4e95\u6fa4", "value": 53}, {"source": "\u7be0\u539f", "target": "\u9808\u85e4", "value": 64}, {"source": "\u4e09\u5b85", "target": "\u5e73\u7530", "value": 36}, {"source": "\u4e09\u5b85", "target": "\u6adb\u7530", "value": 24}, {"source": "\u4e09\u5b85", "target": "\u9808\u85e4", "value": 31}, {"source": "\u5800\u5317", "target": "\u771f\u5d8b", "value": 14}, {"source": "\u771f\u5d8b", "target": "\u7dbe\u5c0f\u8def", "value": 50}, {"source": "\u4f50\u5009", "target": "\u9ad8\u5713\u5bfa", "value": 15}, {"source": "\u5c71\u5167", "target": "\u5e78\u6751", "value": 16}, {"source": "\u5c71\u5167", "target": "\u7be0\u539f", "value": 21}, {"source": "\u5e78\u6751", "target": "\u7be0\u539f", "value": 73}, {"source": "\u5e78\u6751", "target": "\u7dbe\u5c0f\u8def", "value": 130}, {"source": "\u5e78\u6751", "target": "\u9808\u85e4", "value": 47}, {"source": "\u7be0\u539f", "target": "\u7dbe\u5c0f\u8def", "value": 140}, {"source": "\u5e78\u6751", "target": "\u8336\u67f1", "value": 17}, {"source": "\u5e78\u6751", "target": "\u8f15\u4e95\u6fa4", "value": 51}, {"source": "\u4f50\u5009", "target": "\u845b\u57ce", "value": 7}, {"source": "\u5f4c\u5f65", "target": "\u845b\u57ce", "value": 17}, {"source": "\u6adb\u7530", "target": "\u7be0\u539f", "value": 59}, {"source": "\u5bec\u6cbb", "target": "\u7be0\u539f", "value": 5}, {"source": "\u5bec\u6cbb", "target": "\u9808\u85e4", "value": 10}, {"source": "\u4f0a\u5439", "target": "\u4f50\u5009", "value": 10}, {"source": "\u4f0a\u5439", "target": "\u5c71\u5167", "value": 14}, {"source": "\u4f0a\u5439", "target": "\u7dbe\u5c0f\u8def", "value": 128}, {"source": "\u4f0a\u5439", "target": "\u5e73\u7530", "value": 25}, {"source": "\u4f0a\u5439", "target": "\u9808\u85e4", "value": 10}, {"source": "\u4f50\u85e4", "target": "\u5c71\u5167", "value": 10}, {"source": "\u4f50\u85e4", "target": "\u5e73\u7530", "value": 46}, {"source": "\u4f0a\u5439", "target": "\u5800\u5317", "value": 107}, {"source": "\u4f0a\u5439", "target": "\u6adb\u7530", "value": 57}, {"source": "\u4f0a\u5439", "target": "\u5c0f\u5bae", "value": 7}, {"source": "\u4f0a\u5439", "target": "\u8fd1\u85e4", "value": 4}, {"source": "\u4f0a\u5439", "target": "\u9f8d\u5712", "value": 103}, {"source": "\u5c0f\u5bae", "target": "\u9f8d\u5712", "value": 25}, {"source": "\u8fd1\u85e4", "target": "\u9f8d\u5712", "value": 11}, {"source": "\u5800\u5317", "target": "\u9f8d\u5712", "value": 232}, {"source": "\u77f3\u5d0e", "target": "\u9f8d\u5712", "value": 148}, {"source": "\u5f4c\u5f65", "target": "\u7dbe\u5c0f\u8def", "value": 7}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u845b\u57ce", "value": 112}, {"source": "\u5c71\u5167", "target": "\u845b\u57ce", "value": 4}, {"source": "\u5e73\u7530", "target": "\u845b\u57ce", "value": 28}, {"source": "\u5e78\u6751", "target": "\u845b\u57ce", "value": 18}, {"source": "\u4e00\u4e4b\u7028", "target": "\u91d1\u7530", "value": 16}, {"source": "\u5800\u5317", "target": "\u91d1\u7530", "value": 13}, {"source": "\u91d1\u7530", "target": "\u9f8d\u5712", "value": 36}, {"source": "\u5800\u5317", "target": "\u5f4c\u5f65", "value": 8}, {"source": "\u5800\u5317", "target": "\u845b\u57ce", "value": 74}, {"source": "\u845b\u57ce", "target": "\u962a\u67f3", "value": 78}, {"source": "\u4e00\u4e4b\u7028", "target": "\u845b\u57ce", "value": 38}, {"source": "\u4e00\u4e4b\u7028", "target": "\u962a\u67f3", "value": 161}, {"source": "\u5800\u5317", "target": "\u962a\u67f3", "value": 174}, {"source": "\u795e\u5d0e", "target": "\u845b\u57ce", "value": 15}, {"source": "\u795e\u5d0e", "target": "\u962a\u67f3", "value": 27}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u962a\u67f3", "value": 354}, {"source": "\u4f0a\u5439", "target": "\u7be0\u539f", "value": 7}, {"source": "\u4f0a\u5439", "target": "\u8f15\u4e95\u6fa4", "value": 50}, {"source": "\u845b\u57ce", "target": "\u9f8d\u5712", "value": 128}, {"source": "\u5e73\u7530", "target": "\u9f8d\u5712", "value": 67}, {"source": "\u9808\u85e4", "target": "\u9f8d\u5712", "value": 64}, {"source": "\u5e73\u7530", "target": "\u771f\u5d8b", "value": 6}, {"source": "\u771f\u5d8b", "target": "\u9808\u85e4", "value": 5}, {"source": "\u771f\u5d8b", "target": "\u9f8d\u5712", "value": 19}, {"source": "\u4f50\u5009", "target": "\u524d\u5712", "value": 7}, {"source": "\u4f50\u5009", "target": "\u7be0\u539f", "value": 111}, {"source": "\u524d\u5712", "target": "\u7be0\u539f", "value": 12}, {"source": "\u524d\u5712", "target": "\u7dbe\u5c0f\u8def", "value": 43}, {"source": "\u5f4c\u5f65", "target": "\u9ad8\u5713\u5bfa", "value": 11}, {"source": "\u845b\u57ce", "target": "\u9ad8\u5713\u5bfa", "value": 13}, {"source": "\u8f15\u4e95\u6fa4", "target": "\u9f8d\u5712", "value": 54}, {"source": "\u6adb\u7530", "target": "\u845b\u57ce", "value": 17}, {"source": "\u6adb\u7530", "target": "\u9f8d\u5712", "value": 86}, {"source": "\u6adb\u7530\u6a58\u6897", "target": "\u9f8d\u5712", "value": 3}, {"source": "\u795e\u5d0e", "target": "\u9f8d\u5712", "value": 40}, {"source": "\u4f0a\u5439\u6faa", "target": "\u5800\u5317", "value": 9}, {"source": "\u4f0a\u5439\u6faa", "target": "\u9f8d\u5712", "value": 10}, {"source": "\u4f0a\u5439\u6faa", "target": "\u845b\u57ce", "value": 9}, {"source": "\u4f0a\u5439\u6faa", "target": "\u7dbe\u5c0f\u8def", "value": 9}, {"source": "\u5916\u6751", "target": "\u5e78\u6751", "value": 12}, {"source": "\u5916\u6751", "target": "\u771f\u5d8b", "value": 4}, {"source": "\u5e78\u6751", "target": "\u771f\u5d8b", "value": 6}, {"source": "\u771f\u5d8b", "target": "\u8f15\u4e95\u6fa4", "value": 8}, {"source": "\u5916\u6751", "target": "\u8f15\u4e95\u6fa4", "value": 7}, {"source": "\u4e00\u4e4b\u7028", "target": "\u4f0a\u5439", "value": 22}, {"source": "\u4e00\u4e4b\u7028", "target": "\u5e78\u6751", "value": 40}, {"source": "\u4f0a\u5439", "target": "\u5e78\u6751", "value": 11}, {"source": "\u4e00\u4e4b\u7028", "target": "\u753a\u7530", "value": 18}, {"source": "\u4f0a\u5439", "target": "\u753a\u7530", "value": 5}, {"source": "\u753a\u7530", "target": "\u8f15\u4e95\u6fa4", "value": 15}, {"source": "\u4e00\u4e4b\u7028", "target": "\u771f\u934b", "value": 11}, {"source": "\u5e78\u6751", "target": "\u771f\u934b", "value": 15}, {"source": "\u771f\u934b", "target": "\u8f15\u4e95\u6fa4", "value": 43}, {"source": "\u4e00\u4e4b\u7028", "target": "\u6ff1\u53e3", "value": 27}, {"source": "\u6ff1\u53e3", "target": "\u753a\u7530", "value": 8}, {"source": "\u5e78\u6751", "target": "\u6ff1\u53e3", "value": 11}, {"source": "\u5e78\u6751", "target": "\u753a\u7530", "value": 17}, {"source": "\u6ff1\u53e3", "target": "\u771f\u934b", "value": 3}, {"source": "\u6ff1\u53e3", "target": "\u8f15\u4e95\u6fa4", "value": 4}, {"source": "\u753a\u7530", "target": "\u771f\u934b", "value": 11}, {"source": "\u6ff1\u53e3", "target": "\u845b\u57ce", "value": 4}, {"source": "\u5e73\u7530", "target": "\u6ff1\u53e3", "value": 8}, {"source": "\u4f0a\u5439", "target": "\u771f\u934b", "value": 13}, {"source": "\u5e73\u7530", "target": "\u753a\u7530", "value": 8}, {"source": "\u5e73\u7530", "target": "\u771f\u934b", "value": 22}, {"source": "\u4f0a\u5439", "target": "\u845b\u57ce", "value": 16}, {"source": "\u6ff1\u53e3", "target": "\u7dbe\u5c0f\u8def", "value": 17}, {"source": "\u753a\u7530", "target": "\u7dbe\u5c0f\u8def", "value": 10}, {"source": "\u753a\u7530", "target": "\u845b\u57ce", "value": 5}, {"source": "\u771f\u934b", "target": "\u7dbe\u5c0f\u8def", "value": 19}, {"source": "\u845b\u57ce", "target": "\u8f15\u4e95\u6fa4", "value": 8}, {"source": "\u5e73\u7530", "target": "\u7af9\u672c", "value": 3}, {"source": "\u7af9\u672c", "target": "\u7dbe\u5c0f\u8def", "value": 12}, {"source": "\u4f50\u5009", "target": "\u5e78\u6751", "value": 73}, {"source": "\u4e00\u4e4b\u7028", "target": "\u5c71\u5167", "value": 20}, {"source": "\u5c71\u5167", "target": "\u795e\u5d0e", "value": 6}, {"source": "\u5800\u5317", "target": "\u6ff1\u53e3", "value": 8}, {"source": "\u661f\u4e4b\u5bae", "target": "\u6adb\u7530", "value": 3}, {"source": "\u661f\u4e4b\u5bae", "target": "\u771f\u5d8b", "value": 25}, {"source": "\u4e00\u4e4b\u7028", "target": "\u771f\u5d8b", "value": 12}, {"source": "\u661f\u4e4b\u5bae", "target": "\u9f8d\u5712", "value": 11}, {"source": "\u661f\u4e4b\u5bae", "target": "\u9ad8\u5713\u5bfa", "value": 5}, {"source": "\u5916\u6751", "target": "\u5e73\u7530", "value": 4}, {"source": "\u4e00\u4e4b\u7028", "target": "\u5916\u6751", "value": 4}, {"source": "\u5916\u6751", "target": "\u771f\u934b", "value": 3}, {"source": "\u5800\u5317", "target": "\u5916\u6751", "value": 9}, {"source": "\u5e78\u6751", "target": "\u962a\u67f3", "value": 35}, {"source": "\u5e78\u6751", "target": "\u9f8d\u5712", "value": 37}, {"source": "\u753a\u7530", "target": "\u962a\u67f3", "value": 6}, {"source": "\u753a\u7530", "target": "\u9f8d\u5712", "value": 4}, {"source": "\u962a\u67f3", "target": "\u9f8d\u5712", "value": 240}, {"source": "\u4f0a\u5439", "target": "\u5916\u6751", "value": 4}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u8863\u7b20", "value": 6}, {"source": "\u8f15\u4e95\u6fa4", "target": "\u962a\u67f3", "value": 32}, {"source": "\u5bec\u6cbb", "target": "\u6adb\u7530", "value": 5}, {"source": "\u7be0\u539f", "target": "\u845b\u57ce", "value": 3}, {"source": "\u845b\u57ce", "target": "\u9808\u85e4", "value": 27}, {"source": "\u8336\u67f1", "target": "\u845b\u57ce", "value": 3}, {"source": "\u5357\u4e91", "target": "\u7dbe\u5c0f\u8def", "value": 130}, {"source": "\u5357\u4e91", "target": "\u845b\u57ce", "value": 7}, {"source": "\u524d\u5712", "target": "\u5800\u5317", "value": 41}, {"source": "\u524d\u5712", "target": "\u6adb\u7530", "value": 15}, {"source": "\u4e00\u4e4b\u7028", "target": "\u5357\u4e91", "value": 59}, {"source": "\u5357\u4e91", "target": "\u5800\u5317", "value": 130}, {"source": "\u5357\u4e91", "target": "\u6adb\u7530", "value": 22}, {"source": "\u5bec\u6cbb", "target": "\u5c71\u5167", "value": 6}, {"source": "\u5bec\u6cbb", "target": "\u7dbe\u5c0f\u8def", "value": 9}, {"source": "\u77f3\u5009", "target": "\u8f15\u4e95\u6fa4", "value": 6}, {"source": "\u4e00\u4e4b\u7028", "target": "\u67f4\u7530", "value": 31}, {"source": "\u5c71\u5167", "target": "\u67f4\u7530", "value": 4}, {"source": "\u67f4\u7530", "target": "\u795e\u5d0e", "value": 31}, {"source": "\u67f4\u7530", "target": "\u7dbe\u5c0f\u8def", "value": 21}, {"source": "\u67f4\u7530", "target": "\u9808\u85e4", "value": 14}, {"source": "\u8f15\u4e95\u6fa4", "target": "\u9ad8\u5713\u5bfa", "value": 11}, {"source": "\u4f0a\u5439\u540c\u5b78", "target": "\u5800\u5317", "value": 5}, {"source": "\u4f0a\u5439\u540c\u5b78", "target": "\u7dbe\u5c0f\u8def", "value": 8}, {"source": "\u4f0a\u5439\u540c\u5b78", "target": "\u9f8d\u5712", "value": 6}, {"source": "\u5800\u5317", "target": "\u5bec\u6cbb", "value": 7}, {"source": "\u5e73\u7530", "target": "\u962a\u67f3", "value": 37}, {"source": "\u962a\u67f3", "target": "\u9808\u85e4", "value": 36}, {"source": "\u5916\u6751", "target": "\u672c\u5802", "value": 3}, {"source": "\u5916\u6751", "target": "\u9808\u85e4", "value": 3}, {"source": "\u5e73\u7530", "target": "\u672c\u5802", "value": 6}, {"source": "\u5e78\u6751", "target": "\u672c\u5802", "value": 4}, {"source": "\u5bae\u672c", "target": "\u5e73\u7530", "value": 6}, {"source": "\u4e09\u5b85", "target": "\u7dbe\u5c0f\u8def", "value": 83}, {"source": "\u5357\u4e91", "target": "\u5e73\u7530", "value": 15}, {"source": "\u5357\u4e91", "target": "\u67f4\u7530", "value": 3}, {"source": "\u5800\u5317", "target": "\u67f4\u7530", "value": 10}, {"source": "\u5e73\u7530", "target": "\u67f4\u7530", "value": 12}, {"source": "\u67f4\u7530", "target": "\u6adb\u7530", "value": 7}, {"source": "\u5f4c\u5f65", "target": "\u6a4b\u672c", "value": 12}, {"source": "\u5f4c\u5f65", "target": "\u962a\u67f3", "value": 5}, {"source": "\u5f4c\u5f65", "target": "\u9f8d\u5712", "value": 6}, {"source": "\u6a4b\u672c", "target": "\u845b\u57ce", "value": 17}, {"source": "\u6a4b\u672c", "target": "\u962a\u67f3", "value": 128}, {"source": "\u6a4b\u672c", "target": "\u9f8d\u5712", "value": 90}, {"source": "\u67f4\u7530", "target": "\u9f8d\u5712", "value": 8}, {"source": "\u67f4\u7530", "target": "\u845b\u57ce", "value": 3}, {"source": "\u67f4\u7530", "target": "\u9ad8\u5713\u5bfa", "value": 5}, {"source": "\u795e\u5d0e", "target": "\u9ad8\u5713\u5bfa", "value": 8}, {"source": "\u9ad8\u5713\u5bfa", "target": "\u9f8d\u5712", "value": 33}, {"source": "\u5e73\u7530", "target": "\u5f4c\u5f65", "value": 4}, {"source": "\u5f4c\u5f65", "target": "\u9808\u85e4", "value": 5}, {"source": "\u4f0a\u5439\u6faa", "target": "\u5e73\u7530", "value": 3}, {"source": "\u4f50\u5009", "target": "\u5c0f\u5bae", "value": 3}, {"source": "\u4f50\u5009", "target": "\u67f4\u7530", "value": 4}, {"source": "\u5800\u5317", "target": "\u6728\u4e0b", "value": 9}, {"source": "\u5c0f\u5bae", "target": "\u6728\u4e0b", "value": 17}, {"source": "\u5c0f\u5bae", "target": "\u795e\u5d0e", "value": 3}, {"source": "\u5c0f\u5bae", "target": "\u9ad8\u5713\u5bfa", "value": 6}, {"source": "\u6728\u4e0b", "target": "\u67f4\u7530", "value": 3}, {"source": "\u6728\u4e0b", "target": "\u7dbe\u5c0f\u8def", "value": 10}, {"source": "\u6728\u4e0b", "target": "\u9808\u85e4", "value": 11}, {"source": "\u6728\u4e0b", "target": "\u9ad8\u5713\u5bfa", "value": 3}, {"source": "\u6728\u4e0b", "target": "\u9f8d\u5712", "value": 13}, {"source": "\u6adb\u7530", "target": "\u962a\u67f3", "value": 27}, {"source": "\u4e00\u4e4b\u7028", "target": "\u7be0\u539f", "value": 23}, {"source": "\u7be0\u539f", "target": "\u9f8d\u5712", "value": 16}, {"source": "\u4e09\u5b85", "target": "\u845b\u57ce", "value": 5}, {"source": "\u4e09\u5b85", "target": "\u9f8d\u5712", "value": 33}, {"source": "\u5800\u5317", "target": "\u5c0f\u91ce\u5bfa", "value": 30}, {"source": "\u5916\u6751", "target": "\u9f8d\u5712", "value": 3}, {"source": "\u5c0f\u91ce\u5bfa", "target": "\u5e73\u7530", "value": 13}, {"source": "\u5c0f\u91ce\u5bfa", "target": "\u5e78\u6751", "value": 4}, {"source": "\u5c0f\u91ce\u5bfa", "target": "\u9808\u85e4", "value": 44}, {"source": "\u5c0f\u91ce\u5bfa", "target": "\u9f8d\u5712", "value": 6}, {"source": "\u6728\u4e0b", "target": "\u6adb\u7530", "value": 8}, {"source": "\u5c71\u5167", "target": "\u9f8d\u5712", "value": 6}, {"source": "\u6728\u4e0b", "target": "\u8336\u67f1", "value": 8}, {"source": "\u8336\u67f1", "target": "\u9f8d\u5712", "value": 17}, {"source": "\u5bec\u6cbb", "target": "\u5e73\u7530", "value": 3}, {"source": "\u4f50\u85e4", "target": "\u8f15\u4e95\u6fa4", "value": 92}, {"source": "\u4f50\u85e4", "target": "\u845b\u57ce", "value": 6}, {"source": "\u4e09\u5b85", "target": "\u5800\u5317", "value": 54}, {"source": "\u4e09\u5b85", "target": "\u5c0f\u91ce\u5bfa", "value": 3}, {"source": "\u524d\u5712", "target": "\u5c0f\u91ce\u5bfa", "value": 8}, {"source": "\u524d\u5712", "target": "\u5e73\u7530", "value": 22}, {"source": "\u524d\u5712", "target": "\u9808\u85e4", "value": 24}, {"source": "\u5c0f\u91ce\u5bfa", "target": "\u6adb\u7530", "value": 10}, {"source": "\u5c0f\u91ce\u5bfa", "target": "\u7dbe\u5c0f\u8def", "value": 21}, {"source": "\u5357\u4e91", "target": "\u9808\u85e4", "value": 9}, {"source": "\u4f50\u85e4\u540c\u5b78", "target": "\u7dbe\u5c0f\u8def", "value": 12}, {"source": "\u4f50\u85e4\u540c\u5b78", "target": "\u8f15\u4e95\u6fa4", "value": 17}, {"source": "\u4f50\u85e4", "target": "\u8336\u67f1", "value": 14}, {"source": "\u771f\u6f84", "target": "\u7dbe\u5c0f\u8def", "value": 19}, {"source": "\u771f\u6f84", "target": "\u962a\u67f3", "value": 20}, {"source": "\u5e78\u6751", "target": "\u795e\u5d0e", "value": 11}, {"source": "\u4f0a\u5439", "target": "\u77f3\u5d0e", "value": 82}, {"source": "\u897f\u91ce", "target": "\u9f8d\u5712", "value": 22}, {"source": "\u4f0a\u5439", "target": "\u91d1\u7530", "value": 6}, {"source": "\u5357\u4e91", "target": "\u77f3\u5d0e", "value": 19}, {"source": "\u5357\u4e91", "target": "\u963f\u723e\u4f2f\u7279", "value": 4}, {"source": "\u5357\u4e91", "target": "\u9f8d\u5712", "value": 22}, {"source": "\u5800\u5317", "target": "\u963f\u723e\u4f2f\u7279", "value": 6}, {"source": "\u77f3\u5d0e", "target": "\u963f\u723e\u4f2f\u7279", "value": 66}, {"source": "\u963f\u723e\u4f2f\u7279", "target": "\u9f8d\u5712", "value": 46}, {"source": "\u771f\u934b", "target": "\u9f8d\u5712", "value": 9}, {"source": "\u5e73\u7530", "target": "\u77f3\u5d0e", "value": 11}, {"source": "\u5e73\u7530", "target": "\u91d1\u7530", "value": 10}, {"source": "\u5e78\u6751", "target": "\u77f3\u5d0e", "value": 39}, {"source": "\u5e78\u6751", "target": "\u91d1\u7530", "value": 5}, {"source": "\u771f\u934b", "target": "\u77f3\u5d0e", "value": 7}, {"source": "\u77f3\u5d0e", "target": "\u8f15\u4e95\u6fa4", "value": 32}, {"source": "\u77f3\u5d0e", "target": "\u91d1\u7530", "value": 18}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u91d1\u7530", "value": 22}, {"source": "\u4e95\u4e4b\u982d", "target": "\u4f50\u85e4", "value": 5}, {"source": "\u4e95\u4e4b\u982d", "target": "\u5800\u5317", "value": 3}, {"source": "\u4e95\u4e4b\u982d", "target": "\u7dbe\u5c0f\u8def", "value": 7}, {"source": "\u4e95\u4e4b\u982d", "target": "\u9808\u85e4", "value": 5}, {"source": "\u4e95\u4e4b\u982d", "target": "\u9ad8\u5713\u5bfa", "value": 4}, {"source": "\u4f50\u85e4", "target": "\u5e78\u6751", "value": 15}, {"source": "\u4f50\u85e4", "target": "\u9ad8\u5713\u5bfa", "value": 10}, {"source": "\u4f50\u85e4", "target": "\u5c0f\u91ce\u5bfa", "value": 5}, {"source": "\u4e09\u5b85", "target": "\u9577\u8c37\u90e8", "value": 35}, {"source": "\u5e73\u7530", "target": "\u9577\u8c37\u90e8", "value": 22}, {"source": "\u4e09\u5b85", "target": "\u5e78\u6751", "value": 93}, {"source": "\u5e78\u6751", "target": "\u9577\u8c37\u90e8", "value": 30}, {"source": "\u77f3\u5d0e", "target": "\u9577\u8c37\u90e8", "value": 9}, {"source": "\u4e09\u5b85", "target": "\u5c71\u5167", "value": 7}, {"source": "\u4e09\u5b85", "target": "\u4f50\u5009", "value": 82}, {"source": "\u4e00\u4e4b\u7028", "target": "\u4f50\u85e4", "value": 14}, {"source": "\u4e09\u5b85", "target": "\u5c0f\u5bae", "value": 3}, {"source": "\u4e09\u5b85", "target": "\u77f3\u5d0e", "value": 13}, {"source": "\u5c0f\u5bae", "target": "\u9577\u8c37\u90e8", "value": 3}, {"source": "\u9577\u8c37\u90e8", "target": "\u9f8d\u5712", "value": 9}, {"source": "\u4e09\u5b85", "target": "\u65e5\u548c", "value": 7}, {"source": "\u5e78\u6751", "target": "\u65e5\u548c", "value": 5}, {"source": "\u65e5\u548c", "target": "\u77f3\u5d0e", "value": 27}, {"source": "\u65e5\u548c", "target": "\u7dbe\u5c0f\u8def", "value": 64}, {"source": "\u65e5\u548c", "target": "\u9f8d\u5712", "value": 20}, {"source": "\u4e09\u5b85", "target": "\u9ad8\u5713\u5bfa", "value": 12}, {"source": "\u65e5\u548c", "target": "\u9ad8\u5713\u5bfa", "value": 3}, {"source": "\u4f50\u85e4", "target": "\u9577\u8c37\u90e8", "value": 21}, {"source": "\u4e09\u5b85", "target": "\u4f50\u85e4", "value": 7}, {"source": "\u4e09\u5b85", "target": "\u8f15\u4e95\u6fa4", "value": 12}, {"source": "\u8f15\u4e95\u6fa4", "target": "\u9577\u8c37\u90e8", "value": 22}, {"source": "\u4e09\u5b85", "target": "\u7be0\u539f", "value": 89}, {"source": "\u7be0\u539f", "target": "\u9577\u8c37\u90e8", "value": 17}, {"source": "\u4f50\u5009", "target": "\u4f50\u85e4", "value": 8}, {"source": "\u4f50\u5009", "target": "\u77f3\u5d0e", "value": 5}, {"source": "\u4e09\u5b85", "target": "\u8336\u67f1", "value": 7}, {"source": "\u4f50\u85e4", "target": "\u7be0\u539f", "value": 25}, {"source": "\u5800\u5317", "target": "\u690e\u540d", "value": 5}, {"source": "\u5e73\u7530", "target": "\u690e\u540d", "value": 3}, {"source": "\u5e78\u6751", "target": "\u690e\u540d", "value": 4}, {"source": "\u690e\u540d", "target": "\u7be0\u539f", "value": 3}, {"source": "\u690e\u540d", "target": "\u9f8d\u5712", "value": 26}, {"source": "\u4f50\u5009", "target": "\u690e\u540d", "value": 3}, {"source": "\u5c0f\u5bae", "target": "\u7be0\u539f", "value": 21}, {"source": "\u7be0\u539f", "target": "\u9ad8\u5713\u5bfa", "value": 12}, {"source": "\u4e09\u5b85", "target": "\u795e\u5ba4", "value": 3}, {"source": "\u4e09\u5b85", "target": "\u962a\u67f3", "value": 16}, {"source": "\u4f50\u5009", "target": "\u795e\u5ba4", "value": 3}, {"source": "\u4f50\u5009", "target": "\u962a\u67f3", "value": 17}, {"source": "\u795e\u5ba4", "target": "\u7be0\u539f", "value": 3}, {"source": "\u795e\u5ba4", "target": "\u7dbe\u5c0f\u8def", "value": 44}, {"source": "\u795e\u5ba4", "target": "\u962a\u67f3", "value": 66}, {"source": "\u795e\u5ba4", "target": "\u9f8d\u5712", "value": 23}, {"source": "\u7be0\u539f", "target": "\u962a\u67f3", "value": 23}, {"source": "\u8336\u67f1", "target": "\u962a\u67f3", "value": 36}, {"source": "\u5e73\u7530", "target": "\u661f\u4e4b\u5bae", "value": 4}, {"source": "\u5c0f\u5bae", "target": "\u8336\u67f1", "value": 4}, {"source": "\u77f3\u5d0e", "target": "\u8336\u67f1", "value": 5}, {"source": "\u8f15\u4e95\u6fa4", "target": "\u963f\u723e\u4f2f\u7279", "value": 16}, {"source": "\u5800\u5317", "target": "\u6a4b\u672c", "value": 71}, {"source": "\u6a4b\u672c", "target": "\u77f3\u5d0e", "value": 47}, {"source": "\u6a4b\u672c", "target": "\u9ad8\u5713\u5bfa", "value": 35}, {"source": "\u77f3\u5d0e", "target": "\u962a\u67f3", "value": 30}, {"source": "\u77f3\u5d0e", "target": "\u9ad8\u5713\u5bfa", "value": 31}, {"source": "\u962a\u67f3", "target": "\u9ad8\u5713\u5bfa", "value": 38}, {"source": "\u962a\u67f3", "target": "\u9b3c\u982d", "value": 49}, {"source": "\u9ad8\u5713\u5bfa", "target": "\u9b3c\u982d", "value": 6}, {"source": "\u9b3c\u982d", "target": "\u9f8d\u5712", "value": 54}, {"source": "\u4f0a\u5439", "target": "\u690e\u540d", "value": 10}, {"source": "\u690e\u540d", "target": "\u8f15\u4e95\u6fa4", "value": 5}, {"source": "\u4f0a\u5439", "target": "\u963f\u723e\u4f2f\u7279", "value": 17}, {"source": "\u4f0a\u5439", "target": "\u9ad8\u5713\u5bfa", "value": 3}, {"source": "\u963f\u723e\u4f2f\u7279", "target": "\u9ad8\u5713\u5bfa", "value": 13}, {"source": "\u5357\u4e91", "target": "\u5e78\u6751", "value": 20}, {"source": "\u5357\u4e91", "target": "\u962a\u67f3", "value": 20}, {"source": "\u4e00\u4e4b\u7028", "target": "\u4e09\u5b85", "value": 17}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u963f\u723e\u4f2f\u7279", "value": 36}, {"source": "\u4f0a\u5439", "target": "\u962a\u67f3", "value": 13}, {"source": "\u77f3\u5d0e", "target": "\u845b\u57ce", "value": 27}, {"source": "\u77f3\u5d0e", "target": "\u962a\u4e0a", "value": 5}, {"source": "\u962a\u4e0a", "target": "\u9f8d\u5712", "value": 12}, {"source": "\u5c0f\u5bae", "target": "\u963f\u723e\u4f2f\u7279", "value": 4}, {"source": "\u8fd1\u85e4", "target": "\u963f\u723e\u4f2f\u7279", "value": 4}, {"source": "\u962a\u4e0a", "target": "\u962a\u67f3", "value": 12}, {"source": "\u962a\u67f3", "target": "\u963f\u723e\u4f2f\u7279", "value": 6}, {"source": "\u690e\u540d", "target": "\u7dbe\u5c0f\u8def", "value": 32}, {"source": "\u4f50\u85e4\u540c\u5b78", "target": "\u5e73\u7530", "value": 4}, {"source": "\u4f0a\u5439", "target": "\u9577\u8c37\u90e8", "value": 18}, {"source": "\u5c0f\u5bae", "target": "\u91d1\u7530", "value": 10}, {"source": "\u8fd1\u85e4", "target": "\u91d1\u7530", "value": 4}, {"source": "\u4e00\u4e4b\u7028", "target": "\u771f\u6f84", "value": 6}, {"source": "\u4e00\u4e4b\u7028", "target": "\u795e\u5ba4", "value": 18}, {"source": "\u771f\u6f84", "target": "\u795e\u5ba4", "value": 11}, {"source": "\u795e\u5ba4", "target": "\u9577\u8c37\u90e8", "value": 4}, {"source": "\u9577\u8c37\u90e8", "target": "\u962a\u67f3", "value": 9}, {"source": "\u6adb\u7530", "target": "\u795e\u5ba4", "value": 5}, {"source": "\u845b\u57ce", "target": "\u91d1\u7530", "value": 14}, {"source": "\u5800\u5317", "target": "\u6850\u5c71", "value": 32}, {"source": "\u6850\u5c71", "target": "\u7dbe\u5c0f\u8def", "value": 26}, {"source": "\u4f50\u85e4", "target": "\u677e\u4e0b", "value": 23}, {"source": "\u4f50\u85e4", "target": "\u77f3\u5d0e", "value": 3}, {"source": "\u4f50\u85e4", "target": "\u962a\u67f3", "value": 11}, {"source": "\u677e\u4e0b", "target": "\u77f3\u5d0e", "value": 4}, {"source": "\u677e\u4e0b", "target": "\u795e\u5ba4", "value": 3}, {"source": "\u677e\u4e0b", "target": "\u7be0\u539f", "value": 19}, {"source": "\u677e\u4e0b", "target": "\u9577\u8c37\u90e8", "value": 7}, {"source": "\u677e\u4e0b", "target": "\u962a\u67f3", "value": 10}, {"source": "\u77f3\u5d0e", "target": "\u7be0\u539f", "value": 10}, {"source": "\u5357\u4e91", "target": "\u9577\u8c37\u90e8", "value": 11}, {"source": "\u5357\u4e91", "target": "\u8f15\u4e95\u6fa4", "value": 25}, {"source": "\u4f50\u85e4", "target": "\u5357\u4e91", "value": 5}, {"source": "\u9577\u8c37\u90e8", "target": "\u9ad8\u5713\u5bfa", "value": 5}, {"source": "\u5357\u4e91", "target": "\u6850\u5c71", "value": 62}, {"source": "\u6850\u5c71", "target": "\u8f15\u4e95\u6fa4", "value": 8}, {"source": "\u6850\u5c71", "target": "\u9577\u8c37\u90e8", "value": 5}, {"source": "\u6a4b\u672c", "target": "\u795e\u5ba4", "value": 38}, {"source": "\u6a4b\u672c", "target": "\u7dbe\u5c0f\u8def", "value": 222}, {"source": "\u6a4b\u672c", "target": "\u9577\u8c37\u90e8", "value": 3}, {"source": "\u6a4b\u672c", "target": "\u9b3c\u982d", "value": 45}, {"source": "\u795e\u5ba4", "target": "\u9b3c\u982d", "value": 17}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u9b3c\u982d", "value": 53}, {"source": "\u9577\u8c37\u90e8", "target": "\u9b3c\u982d", "value": 3}, {"source": "\u6a4b\u672c", "target": "\u963f\u723e\u4f2f\u7279", "value": 15}, {"source": "\u77f3\u5d0e", "target": "\u9b3c\u982d", "value": 8}, {"source": "\u963f\u723e\u4f2f\u7279", "target": "\u9b3c\u982d", "value": 3}, {"source": "\u4f50\u5009", "target": "\u5357\u4e91", "value": 5}, {"source": "\u5357\u4e91", "target": "\u7be0\u539f", "value": 4}, {"source": "\u4e09\u5b85", "target": "\u91d1\u7530", "value": 4}, {"source": "\u5e78\u6751", "target": "\u963f\u723e\u4f2f\u7279", "value": 14}, {"source": "\u5357\u4e91", "target": "\u6a4b\u672c", "value": 26}, {"source": "\u5357\u4e91", "target": "\u9ad8\u5713\u5bfa", "value": 34}, {"source": "\u5e78\u6751", "target": "\u6a4b\u672c", "value": 27}, {"source": "\u4e09\u5b85", "target": "\u67f4\u7530", "value": 6}, {"source": "\u4e09\u5b85", "target": "\u795e\u5d0e", "value": 11}, {"source": "\u5e78\u6751", "target": "\u67f4\u7530", "value": 7}, {"source": "\u67f4\u7530", "target": "\u91d1\u7530", "value": 3}, {"source": "\u795e\u5d0e", "target": "\u91d1\u7530", "value": 7}, {"source": "\u91d1\u7530", "target": "\u9808\u85e4", "value": 3}, {"source": "\u690e\u540d", "target": "\u77f3\u5d0e", "value": 22}, {"source": "\u5e78\u6751", "target": "\u5f4c\u5f65", "value": 13}, {"source": "\u5f4c\u5f65", "target": "\u77f3\u5d0e", "value": 14}, {"source": "\u5f4c\u5f65", "target": "\u963f\u723e\u4f2f\u7279", "value": 7}, {"source": "\u4e00\u4e4b\u7028", "target": "\u6a4b\u672c", "value": 58}, {"source": "\u6a4b\u672c", "target": "\u8f15\u4e95\u6fa4", "value": 17}, {"source": "\u5e73\u7530", "target": "\u6a4b\u672c", "value": 15}, {"source": "\u5c0f\u91ce\u5bfa", "target": "\u9ad8\u5713\u5bfa", "value": 7}, {"source": "\u6642\u4efb", "target": "\u9ad8\u5713\u5bfa", "value": 3}, {"source": "\u5357\u4e91", "target": "\u5f4c\u5f65", "value": 3}, {"source": "\u5357\u4e91", "target": "\u77f3\u5009", "value": 13}, {"source": "\u77f3\u5009", "target": "\u7dbe\u5c0f\u8def", "value": 7}, {"source": "\u77f3\u5009", "target": "\u9ad8\u5713\u5bfa", "value": 3}, {"source": "\u5e78\u6751", "target": "\u77f3\u5009", "value": 8}, {"source": "\u4e00\u4e4b\u7028", "target": "\u690e\u540d", "value": 8}, {"source": "\u6850\u5c71", "target": "\u77f3\u5009", "value": 3}, {"source": "\u6850\u5c71", "target": "\u77f3\u5d0e", "value": 3}, {"source": "\u6850\u5c71", "target": "\u9ad8\u5713\u5bfa", "value": 17}, {"source": "\u5800\u5317", "target": "\u77f3\u5009", "value": 8}, {"source": "\u963f\u723e\u4f2f\u7279", "target": "\u9808\u85e4", "value": 6}, {"source": "\u5c71\u5167", "target": "\u795e\u5ba4", "value": 7}, {"source": "\u5c71\u5167", "target": "\u962a\u67f3", "value": 28}, {"source": "\u67f4\u7530", "target": "\u962a\u67f3", "value": 7}, {"source": "\u6a4b\u672c", "target": "\u9808\u85e4", "value": 12}, {"source": "\u67f4\u7530", "target": "\u963f\u723e\u4f2f\u7279", "value": 3}, {"source": "\u845b\u57ce", "target": "\u963f\u723e\u4f2f\u7279", "value": 4}, {"source": "\u6a4b\u672c", "target": "\u8336\u67f1", "value": 3}, {"source": "\u5357\u4e91", "target": "\u671d\u6bd4\u5948", "value": 24}, {"source": "\u671d\u6bd4\u5948", "target": "\u6850\u5c71", "value": 4}, {"source": "\u5357\u4e91", "target": "\u5800\u5317\u5b78", "value": 10}, {"source": "\u5800\u5317\u5b78", "target": "\u6a4b\u672c", "value": 3}, {"source": "\u5800\u5317", "target": "\u671d\u6bd4\u5948", "value": 6}, {"source": "\u6642\u4efb", "target": "\u77f3\u5d0e", "value": 13}, {"source": "\u6642\u4efb", "target": "\u6a4b\u672c", "value": 3}, {"source": "\u6642\u4efb", "target": "\u963f\u723e\u4f2f\u7279", "value": 5}, {"source": "\u5357\u4e91", "target": "\u661f\u4e4b\u5bae", "value": 3}, {"source": "\u5c0f\u7f8e", "target": "\u5e73\u7530", "value": 34}, {"source": "\u5c0f\u7f8e", "target": "\u5e78\u6751", "value": 12}, {"source": "\u5c0f\u7f8e", "target": "\u7be0\u539f", "value": 13}, {"source": "\u5c0f\u7f8e", "target": "\u8f15\u4e95\u6fa4", "value": 5}, {"source": "\u5c0f\u7f8e", "target": "\u7dbe\u5c0f\u8def", "value": 33}, {"source": "\u6a4b\u672c", "target": "\u795e\u5d0e", "value": 26}, {"source": "\u6a4b\u672c", "target": "\u6adb\u7530", "value": 6}, {"source": "\u795e\u5d0e", "target": "\u7be0\u539f", "value": 9}, {"source": "\u4e09\u5b85", "target": "\u6a4b\u672c", "value": 8}, {"source": "\u4f50\u5009", "target": "\u6a4b\u672c", "value": 11}, {"source": "\u6a4b\u672c", "target": "\u7be0\u539f", "value": 9}, {"source": "\u6a4b\u672c", "target": "\u897f\u5ddd", "value": 11}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u897f\u5ddd", "value": 21}, {"source": "\u4f50\u5009", "target": "\u65e5\u548c", "value": 3}, {"source": "\u65e5\u548c", "target": "\u7be0\u539f", "value": 6}, {"source": "\u65e5\u548c", "target": "\u8f15\u4e95\u6fa4", "value": 10}, {"source": "\u4f0a\u5439", "target": "\u6a4b\u672c", "value": 12}, {"source": "\u661f\u4e4b\u5bae", "target": "\u962a\u67f3", "value": 22}, {"source": "\u4f50\u85e4", "target": "\u524d\u5712", "value": 17}, {"source": "\u4f50\u85e4", "target": "\u672c\u5802", "value": 4}, {"source": "\u524d\u5712", "target": "\u5c71\u5167", "value": 3}, {"source": "\u524d\u5712", "target": "\u672c\u5802", "value": 4}, {"source": "\u524d\u5712", "target": "\u8f15\u4e95\u6fa4", "value": 8}, {"source": "\u5c0f\u91ce\u5bfa", "target": "\u672c\u5802", "value": 4}, {"source": "\u5c0f\u91ce\u5bfa", "target": "\u8f15\u4e95\u6fa4", "value": 7}, {"source": "\u672c\u5802", "target": "\u8f15\u4e95\u6fa4", "value": 7}, {"source": "\u4f50\u85e4", "target": "\u795e\u5d0e", "value": 6}, {"source": "\u672c\u5802", "target": "\u7be0\u539f", "value": 12}, {"source": "\u672c\u5802", "target": "\u962a\u67f3", "value": 4}, {"source": "\u795e\u5d0e", "target": "\u8f15\u4e95\u6fa4", "value": 13}, {"source": "\u5800\u5317", "target": "\u795e\u5ba4", "value": 13}, {"source": "\u5800\u5317", "target": "\u9b3c\u982d", "value": 14}, {"source": "\u4f0a\u5439", "target": "\u65e5\u548c", "value": 7}, {"source": "\u4f0a\u5439", "target": "\u9b3c\u982d", "value": 5}, {"source": "\u5e73\u7530", "target": "\u65e5\u548c", "value": 3}, {"source": "\u5e73\u7530", "target": "\u9b3c\u982d", "value": 4}, {"source": "\u65e5\u548c", "target": "\u6a4b\u672c", "value": 24}, {"source": "\u65e5\u548c", "target": "\u963f\u723e\u4f2f\u7279", "value": 7}, {"source": "\u65e5\u548c", "target": "\u9b3c\u982d", "value": 11}, {"source": "\u8f15\u4e95\u6fa4", "target": "\u9b3c\u982d", "value": 3}, {"source": "\u4e00\u4e4b\u7028", "target": "\u65e5\u548c", "value": 11}, {"source": "\u4e00\u4e4b\u7028", "target": "\u9b3c\u982d", "value": 5}, {"source": "\u4e09\u5b85", "target": "\u9b3c\u982d", "value": 3}, {"source": "\u65e5\u548c", "target": "\u962a\u67f3", "value": 5}, {"source": "\u4e09\u5b85", "target": "\u4f0a\u5439", "value": 3}, {"source": "\u771f\u6f84", "target": "\u9f8d\u5712", "value": 6}, {"source": "\u4e00\u4e4b\u7028", "target": "\u6850\u5c71", "value": 13}, {"source": "\u4f0a\u5439", "target": "\u5357\u4e91", "value": 8}, {"source": "\u690e\u540d", "target": "\u6a4b\u672c", "value": 10}, {"source": "\u6850\u5c71", "target": "\u6adb\u7530", "value": 4}, {"source": "\u5357\u4e91", "target": "\u8336\u67f1", "value": 6}, {"source": "\u4e00\u4e4b\u7028", "target": "\u671d\u6bd4\u5948", "value": 4}, {"source": "\u671d\u6bd4\u5948", "target": "\u7dbe\u5c0f\u8def", "value": 16}, {"source": "\u795e\u5ba4", "target": "\u8336\u67f1", "value": 3}, {"source": "\u4f50\u85e4", "target": "\u6a4b\u672c", "value": 5}, {"source": "\u5c71\u5167", "target": "\u6a4b\u672c", "value": 4}, {"source": "\u5357\u4e91", "target": "\u795e\u5d0e", "value": 4}, {"source": "\u5800\u5317", "target": "\u5c0f\u7f8e", "value": 27}, {"source": "\u5c0f\u7f8e", "target": "\u5c71\u5167", "value": 4}, {"source": "\u771f\u5d8b", "target": "\u845b\u57ce", "value": 3}, {"source": "\u771f\u5d8b", "target": "\u962a\u67f3", "value": 28}, {"source": "\u6a4b\u672c", "target": "\u771f\u5d8b", "value": 5}, {"source": "\u771f\u5d8b", "target": "\u9b3c\u982d", "value": 5}, {"source": "\u845b\u57ce", "target": "\u9b3c\u982d", "value": 11}, {"source": "\u5c0f\u7f8e", "target": "\u9808\u85e4", "value": 14}, {"source": "\u5c0f\u7f8e", "target": "\u9ad8\u5713\u5bfa", "value": 16}, {"source": "\u91d1\u7530", "target": "\u962a\u67f3", "value": 12}, {"source": "\u4f0a\u5439", "target": "\u897f\u91ce", "value": 4}, {"source": "\u5c0f\u5bae", "target": "\u897f\u91ce", "value": 3}, {"source": "\u77f3\u5d0e", "target": "\u897f\u91ce", "value": 12}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u897f\u91ce", "value": 16}, {"source": "\u65e5\u548c", "target": "\u690e\u540d", "value": 11}, {"source": "\u4f0a\u5439", "target": "\u795e\u5d0e", "value": 5}, {"source": "\u6708\u57ce", "target": "\u7dbe\u5c0f\u8def", "value": 54}, {"source": "\u6708\u57ce", "target": "\u962a\u67f3", "value": 25}, {"source": "\u661f\u4e4b\u5bae", "target": "\u6708\u57ce", "value": 3}, {"source": "\u6708\u57ce", "target": "\u771f\u5d8b", "value": 17}, {"source": "\u6708\u57ce", "target": "\u8336\u67f1", "value": 19}, {"source": "\u5c0f\u7f8e", "target": "\u6adb\u7530", "value": 17}, {"source": "\u5c0f\u7f8e", "target": "\u6a4b\u672c", "value": 3}, {"source": "\u5800\u5317", "target": "\u5bae\u672c", "value": 7}, {"source": "\u5c0f\u7f8e", "target": "\u962a\u67f3", "value": 4}, {"source": "\u661f\u4e4b\u5bae", "target": "\u962a\u4e0a", "value": 18}, {"source": "\u661f\u4e4b\u5bae", "target": "\u845b\u57ce", "value": 4}, {"source": "\u677e\u4e0b", "target": "\u845b\u57ce", "value": 4}, {"source": "\u677e\u4e0b", "target": "\u9ad8\u5713\u5bfa", "value": 4}, {"source": "\u845b\u57ce", "target": "\u962a\u4e0a", "value": 3}, {"source": "\u5800\u5317", "target": "\u6708\u57ce", "value": 8}, {"source": "\u6708\u57ce", "target": "\u6a4b\u672c", "value": 3}, {"source": "\u4e00\u4e4b\u7028", "target": "\u6708\u57ce", "value": 13}, {"source": "\u6708\u57ce", "target": "\u9f8d\u5712", "value": 4}, {"source": "\u5409\u7530", "target": "\u7dbe\u5c0f\u8def", "value": 31}, {"source": "\u5409\u7530", "target": "\u962a\u67f3", "value": 3}, {"source": "\u9808\u85e4", "target": "\u9b3c\u982d", "value": 4}, {"source": "\u661f\u4e4b\u5bae", "target": "\u9b3c\u982d", "value": 3}, {"source": "\u5c71\u6751", "target": "\u962a\u67f3", "value": 46}, {"source": "\u661f\u4e4b\u5bae", "target": "\u6a4b\u672c", "value": 5}, {"source": "\u6a4b\u672c", "target": "\u962a\u4e0a", "value": 3}, {"source": "\u690e\u540d", "target": "\u845b\u57ce", "value": 9}, {"source": "\u690e\u540d", "target": "\u963f\u723e\u4f2f\u7279", "value": 6}, {"source": "\u6708\u57ce", "target": "\u677e\u4e0b", "value": 4}, {"source": "\u5800\u5317", "target": "\u677e\u4e0b", "value": 36}, {"source": "\u677e\u4e0b", "target": "\u8336\u67f1", "value": 5}, {"source": "\u5357\u4e91", "target": "\u6708\u57ce", "value": 6}, {"source": "\u6708\u57ce", "target": "\u9ad8\u5713\u5bfa", "value": 4}, {"source": "\u5800\u5317", "target": "\u5929\u6fa4", "value": 60}, {"source": "\u5929\u6fa4", "target": "\u9808\u85e4", "value": 12}, {"source": "\u5929\u6fa4", "target": "\u7dbe\u5c0f\u8def", "value": 91}, {"source": "\u516b\u795e", "target": "\u6708\u57ce", "value": 3}, {"source": "\u516b\u795e", "target": "\u6adb\u7530", "value": 37}, {"source": "\u4e03\u7028", "target": "\u7dbe\u5c0f\u8def", "value": 89}, {"source": "\u4e09\u5b85", "target": "\u5bf6\u6cc9", "value": 4}, {"source": "\u516b\u795e", "target": "\u5bf6\u6cc9", "value": 18}, {"source": "\u516b\u795e", "target": "\u7dbe\u5c0f\u8def", "value": 61}, {"source": "\u516b\u795e", "target": "\u9f8d\u5712", "value": 11}, {"source": "\u5bf6\u6cc9", "target": "\u6adb\u7530", "value": 6}, {"source": "\u5bf6\u6cc9", "target": "\u7be0\u539f", "value": 3}, {"source": "\u5bf6\u6cc9", "target": "\u7dbe\u5c0f\u8def", "value": 53}, {"source": "\u5bf6\u6cc9", "target": "\u9808\u85e4", "value": 30}, {"source": "\u5bf6\u6cc9", "target": "\u9f8d\u5712", "value": 30}, {"source": "\u5800\u5317", "target": "\u5bf6\u6cc9", "value": 37}, {"source": "\u4e03\u7028", "target": "\u5929\u6fa4", "value": 48}, {"source": "\u4e03\u7028", "target": "\u5bf6\u6cc9", "value": 58}, {"source": "\u4e03\u7028", "target": "\u9808\u85e4", "value": 39}, {"source": "\u5929\u6fa4", "target": "\u5bf6\u6cc9", "value": 19}, {"source": "\u4e03\u7028", "target": "\u5800\u5317", "value": 48}, {"source": "\u4e03\u7028", "target": "\u5e73\u7530", "value": 3}, {"source": "\u4e03\u7028", "target": "\u9f8d\u5712", "value": 18}, {"source": "\u4f0a\u5439", "target": "\u5bf6\u6cc9", "value": 4}, {"source": "\u4e03\u7028", "target": "\u4f0a\u5439", "value": 9}, {"source": "\u4e03\u7028", "target": "\u77f3\u5d0e", "value": 7}, {"source": "\u5bf6\u6cc9", "target": "\u77f3\u5d0e", "value": 9}, {"source": "\u5bf6\u6cc9", "target": "\u963f\u723e\u4f2f\u7279", "value": 8}, {"source": "\u4e03\u7028", "target": "\u4f50\u85e4", "value": 4}, {"source": "\u4e03\u7028", "target": "\u516b\u795e", "value": 13}, {"source": "\u4e03\u7028", "target": "\u6adb\u7530", "value": 13}, {"source": "\u4f50\u85e4", "target": "\u516b\u795e", "value": 5}, {"source": "\u4f50\u85e4", "target": "\u5c0f\u7f8e", "value": 11}, {"source": "\u516b\u795e", "target": "\u5800\u5317", "value": 21}, {"source": "\u5c0f\u7f8e", "target": "\u677e\u4e0b", "value": 14}, {"source": "\u4e03\u7028", "target": "\u962a\u67f3", "value": 5}, {"source": "\u5bf6\u6cc9", "target": "\u962a\u67f3", "value": 6}, {"source": "\u5929\u6fa4", "target": "\u6adb\u7530", "value": 33}, {"source": "\u4e03\u7028", "target": "\u8f15\u4e95\u6fa4", "value": 6}, {"source": "\u5929\u6fa4", "target": "\u8f15\u4e95\u6fa4", "value": 17}, {"source": "\u4e03\u7028", "target": "\u6708\u57ce", "value": 16}, {"source": "\u4e03\u7028", "target": "\u5357\u4e91", "value": 15}, {"source": "\u5357\u4e91", "target": "\u5bf6\u6cc9", "value": 5}, {"source": "\u4e03\u7028", "target": "\u8336\u67f1", "value": 4}, {"source": "\u4e03\u7028", "target": "\u4e09\u5b85", "value": 3}, {"source": "\u4e03\u7028", "target": "\u9ad8\u5713\u5bfa", "value": 5}, {"source": "\u4e09\u5b85", "target": "\u5929\u6fa4", "value": 3}, {"source": "\u5929\u6fa4", "target": "\u8336\u67f1", "value": 3}, {"source": "\u5929\u6fa4", "target": "\u9ad8\u5713\u5bfa", "value": 3}, {"source": "\u5929\u6fa4", "target": "\u9f8d\u5712", "value": 13}, {"source": "\u5bf6\u6cc9", "target": "\u8336\u67f1", "value": 3}, {"source": "\u771f\u5d8b", "target": "\u9ad8\u5713\u5bfa", "value": 3}, {"source": "\u690e\u540d", "target": "\u962a\u67f3", "value": 8}, {"source": "\u524d\u5712", "target": "\u5e78\u6751", "value": 3}, {"source": "\u5bae\u672c", "target": "\u7be0\u539f", "value": 5}, {"source": "\u4e09\u5b85", "target": "\u677e\u4e0b", "value": 8}, {"source": "\u4f50\u5009", "target": "\u677e\u4e0b", "value": 6}, {"source": "\u5e78\u6751", "target": "\u677e\u4e0b", "value": 4}, {"source": "\u4e00\u4e4b\u7028", "target": "\u9ad8\u5713\u5bfa", "value": 16}, {"source": "\u5800\u5317", "target": "\u771f\u6f84", "value": 6}, {"source": "\u6a4b\u672c", "target": "\u771f\u6f84", "value": 10}, {"source": "\u771f\u6f84", "target": "\u9b3c\u982d", "value": 7}, {"source": "\u516b\u795e", "target": "\u5b87\u90fd\u5bae", "value": 16}, {"source": "\u5b87\u90fd\u5bae", "target": "\u5bf6\u6cc9", "value": 20}, {"source": "\u516b\u795e", "target": "\u5357\u4e91", "value": 11}, {"source": "\u5b87\u90fd\u5bae", "target": "\u7dbe\u5c0f\u8def", "value": 29}, {"source": "\u677e\u4e0b", "target": "\u9f8d\u5712", "value": 6}, {"source": "\u5800\u5317", "target": "\u5b87\u90fd\u5bae", "value": 5}, {"source": "\u5357\u4e91", "target": "\u9b3c\u9f8d\u9662", "value": 44}, {"source": "\u5800\u5317", "target": "\u9b3c\u9f8d\u9662", "value": 22}, {"source": "\u6850\u5c71", "target": "\u9b3c\u9f8d\u9662", "value": 23}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u9b3c\u9f8d\u9662", "value": 47}, {"source": "\u9ad8\u5713\u5bfa", "target": "\u9b3c\u9f8d\u9662", "value": 5}, {"source": "\u4e00\u4e4b\u7028", "target": "\u897f\u91ce", "value": 3}, {"source": "\u5800\u5317", "target": "\u897f\u91ce", "value": 4}, {"source": "\u845b\u57ce", "target": "\u897f\u91ce", "value": 3}, {"source": "\u5929\u6fa4", "target": "\u7dbe\u5c0f\u8def\u5b78\u9577", "value": 6}, {"source": "\u4e03\u7028", "target": "\u7dbe\u5c0f\u8def\u5b78\u9577", "value": 15}, {"source": "\u4e03\u7028", "target": "\u672c\u5802", "value": 14}, {"source": "\u4e03\u7028", "target": "\u7be0\u539f", "value": 9}, {"source": "\u4e03\u7028", "target": "\u6850\u5c71", "value": 6}, {"source": "\u6850\u5c71", "target": "\u7dbe\u5c0f\u8def\u5b78\u9577", "value": 4}, {"source": "\u5bf6\u6cc9", "target": "\u7dbe\u5c0f\u8def\u5b78\u9577", "value": 3}, {"source": "\u4e00\u4e4b\u7028", "target": "\u4e03\u7028", "value": 6}, {"source": "\u4e03\u7028", "target": "\u6a4b\u672c", "value": 7}, {"source": "\u6728\u4e0b", "target": "\u7be0\u539f", "value": 10}, {"source": "\u4e03\u7028", "target": "\u5c0f\u5bae", "value": 7}, {"source": "\u4e03\u7028", "target": "\u6728\u4e0b", "value": 3}, {"source": "\u5c0f\u5bae", "target": "\u845b\u57ce", "value": 3}, {"source": "\u5c0f\u5bae", "target": "\u962a\u67f3", "value": 4}, {"source": "\u5c0f\u5bae", "target": "\u962a\u4e0a", "value": 6}, {"source": "\u6728\u4e0b", "target": "\u962a\u4e0a", "value": 4}, {"source": "\u516b\u795e", "target": "\u5929\u6fa4", "value": 19}, {"source": "\u5929\u6fa4", "target": "\u5b87\u90fd\u5bae", "value": 3}, {"source": "\u4e03\u7028", "target": "\u5b87\u90fd\u5bae", "value": 8}, {"source": "\u5b87\u90fd\u5bae", "target": "\u6adb\u7530", "value": 4}, {"source": "\u4e00\u4e4b\u7028", "target": "\u5bf6\u6cc9", "value": 4}, {"source": "\u67f4\u7530", "target": "\u6a4b\u672c", "value": 3}, {"source": "\u5357\u4e91", "target": "\u5929\u6fa4", "value": 15}, {"source": "\u767d\u6ce2", "target": "\u7dbe\u5c0f\u8def", "value": 13}, {"source": "\u767d\u6ce2", "target": "\u7af9\u672c", "value": 3}, {"source": "\u7af9\u672c", "target": "\u962a\u67f3", "value": 3}, {"source": "\u516b\u795e", "target": "\u962a\u67f3", "value": 4}, {"source": "\u5800\u5317", "target": "\u7af9\u672c", "value": 5}, {"source": "\u5b87\u90fd\u5bae", "target": "\u962a\u67f3", "value": 3}, {"source": "\u4f0a\u5439", "target": "\u5929\u6fa4", "value": 28}, {"source": "\u4e00\u4e4b\u7028", "target": "\u5929\u6fa4", "value": 6}, {"source": "\u5929\u6fa4", "target": "\u6708\u57ce", "value": 5}, {"source": "\u4e00\u4e4b\u7028", "target": "\u59ec\u91ce", "value": 36}, {"source": "\u59ec\u91ce", "target": "\u7dbe\u5c0f\u8def", "value": 33}, {"source": "\u4e00\u4e4b\u7028", "target": "\u767d\u6ce2", "value": 6}, {"source": "\u5929\u6fa4", "target": "\u962a\u67f3", "value": 8}, {"source": "\u65e5\u548c", "target": "\u6642\u4efb", "value": 4}, {"source": "\u65e5\u548c", "target": "\u845b\u57ce", "value": 10}, {"source": "\u6642\u4efb", "target": "\u690e\u540d", "value": 5}, {"source": "\u6642\u4efb", "target": "\u7dbe\u5c0f\u8def", "value": 12}, {"source": "\u6642\u4efb", "target": "\u845b\u57ce", "value": 15}, {"source": "\u6642\u4efb", "target": "\u9f8d\u5712", "value": 28}, {"source": "\u4f50\u85e4", "target": "\u9f8d\u5712", "value": 9}, {"source": "\u661f\u4e4b\u5bae", "target": "\u795e\u5d0e", "value": 11}, {"source": "\u5800\u5317", "target": "\u77f3\u4e0a", "value": 11}, {"source": "\u77f3\u4e0a", "target": "\u7dbe\u5c0f\u8def", "value": 12}, {"source": "\u77f3\u4e0a", "target": "\u795e\u5d0e", "value": 6}, {"source": "\u77f3\u4e0a", "target": "\u962a\u67f3", "value": 8}, {"source": "\u5929\u6fa4", "target": "\u77f3\u4e0a", "value": 7}, {"source": "\u524d\u5712", "target": "\u5c0f\u7f8e", "value": 12}, {"source": "\u524d\u5712", "target": "\u677e\u4e0b", "value": 17}, {"source": "\u5c0f\u7f8e", "target": "\u8336\u67f1", "value": 4}, {"source": "\u524d\u5712", "target": "\u77f3\u5009", "value": 3}, {"source": "\u5c0f\u91ce\u5bfa", "target": "\u7be0\u539f", "value": 5}, {"source": "\u5800\u5317", "target": "\u59ec\u91ce", "value": 3}, {"source": "\u59ec\u91ce", "target": "\u795e\u5d0e", "value": 41}, {"source": "\u59ec\u91ce", "target": "\u9f8d\u5712", "value": 4}, {"source": "\u661f\u4e4b\u5bae", "target": "\u67f4\u7530", "value": 4}, {"source": "\u661f\u4e4b\u5bae", "target": "\u767d\u6ce2", "value": 3}, {"source": "\u67f4\u7530", "target": "\u6ff1\u53e3", "value": 4}, {"source": "\u67f4\u7530", "target": "\u7db2\u5009", "value": 4}, {"source": "\u6ff1\u53e3", "target": "\u795e\u5d0e", "value": 16}, {"source": "\u6ff1\u53e3", "target": "\u7db2\u5009", "value": 7}, {"source": "\u767d\u6ce2", "target": "\u795e\u5d0e", "value": 3}, {"source": "\u795e\u5d0e", "target": "\u7db2\u5009", "value": 26}, {"source": "\u6642\u4efb", "target": "\u91d1\u7530", "value": 4}, {"source": "\u4f0a\u5439", "target": "\u6642\u4efb", "value": 3}, {"source": "\u4e09\u5b85", "target": "\u5c0f\u7f8e", "value": 4}, {"source": "\u4f50\u5009", "target": "\u5c0f\u91ce\u5bfa", "value": 3}, {"source": "\u5c0f\u7f8e", "target": "\u5c0f\u91ce\u5bfa", "value": 5}, {"source": "\u5c0f\u91ce\u5bfa", "target": "\u677e\u4e0b", "value": 5}, {"source": "\u677e\u4e0b", "target": "\u9808\u85e4", "value": 14}, {"source": "\u5c0f\u7f8e", "target": "\u9577\u8c37\u90e8", "value": 3}, {"source": "\u524d\u5712", "target": "\u9ad8\u5713\u5bfa", "value": 6}, {"source": "\u516b\u795e", "target": "\u8f15\u4e95\u6fa4", "value": 5}, {"source": "\u4e00\u4e4b\u7028", "target": "\u524d\u5712", "value": 16}, {"source": "\u4e00\u4e4b\u7028", "target": "\u677e\u4e0b", "value": 8}, {"source": "\u524d\u5712", "target": "\u8336\u67f1", "value": 5}, {"source": "\u4e00\u4e4b\u7028", "target": "\u5c0f\u91ce\u5bfa", "value": 4}, {"source": "\u5c0f\u91ce\u5bfa", "target": "\u962a\u67f3", "value": 7}, {"source": "\u5bf6\u6cc9", "target": "\u5c0f\u91ce\u5bfa", "value": 7}, {"source": "\u4f0a\u5439", "target": "\u59ec\u91ce", "value": 4}, {"source": "\u59ec\u91ce", "target": "\u962a\u67f3", "value": 3}, {"source": "\u677e\u4e0b", "target": "\u6a4b\u672c", "value": 9}, {"source": "\u524d\u5712", "target": "\u845b\u57ce", "value": 3}, {"source": "\u524d\u5712", "target": "\u9f8d\u5712", "value": 5}, {"source": "\u5c0f\u7f8e", "target": "\u9f8d\u5712", "value": 5}, {"source": "\u677e\u4e0b", "target": "\u91d1\u7530", "value": 3}, {"source": "\u524d\u5712", "target": "\u6a4b\u672c", "value": 6}, {"source": "\u4f50\u85e4", "target": "\u77f3\u5009", "value": 4}, {"source": "\u4f0a\u5439\u540c\u5b78", "target": "\u771f\u5d8b", "value": 3}, {"source": "\u771f\u5d8b", "target": "\u962a\u4e0a", "value": 16}, {"source": "\u4f0a\u5439", "target": "\u516b\u795e", "value": 4}, {"source": "\u5c71\u6751", "target": "\u771f\u5d8b", "value": 3}, {"source": "\u5c71\u6751", "target": "\u9f8d\u5712", "value": 35}, {"source": "\u5c71\u6751", "target": "\u6adb\u7530", "value": 16}, {"source": "\u5c71\u6751", "target": "\u897f\u91ce", "value": 11}, {"source": "\u5c71\u6751", "target": "\u9b3c\u982d", "value": 20}, {"source": "\u6adb\u7530", "target": "\u897f\u91ce", "value": 13}, {"source": "\u6adb\u7530", "target": "\u9b3c\u982d", "value": 19}, {"source": "\u897f\u91ce", "target": "\u9b3c\u982d", "value": 12}, {"source": "\u6adb\u7530", "target": "\u6e21\u908a", "value": 18}, {"source": "\u6adb\u7530", "target": "\u7db2\u5009", "value": 17}, {"source": "\u6e21\u908a", "target": "\u7db2\u5009", "value": 40}, {"source": "\u6e21\u908a", "target": "\u7dbe\u5c0f\u8def", "value": 46}, {"source": "\u6e21\u908a", "target": "\u9b3c\u982d", "value": 21}, {"source": "\u6e21\u908a", "target": "\u9f8d\u5712", "value": 23}, {"source": "\u7db2\u5009", "target": "\u7dbe\u5c0f\u8def", "value": 46}, {"source": "\u7db2\u5009", "target": "\u9b3c\u982d", "value": 11}, {"source": "\u7db2\u5009", "target": "\u9f8d\u5712", "value": 13}, {"source": "\u5c71\u6751", "target": "\u7dbe\u5c0f\u8def", "value": 67}, {"source": "\u8fd1\u85e4", "target": "\u962a\u67f3", "value": 3}, {"source": "\u5800\u5317", "target": "\u6e21\u908a", "value": 3}, {"source": "\u6e21\u908a", "target": "\u8f15\u4e95\u6fa4", "value": 9}, {"source": "\u6e21\u908a", "target": "\u897f\u91ce", "value": 8}, {"source": "\u7db2\u5009", "target": "\u897f\u91ce", "value": 9}, {"source": "\u5c71\u6751", "target": "\u6e21\u908a", "value": 7}, {"source": "\u5c71\u6751", "target": "\u7db2\u5009", "value": 7}, {"source": "\u5c0f\u91ce\u5bfa", "target": "\u5c71\u6751", "value": 3}, {"source": "\u5c71\u6751", "target": "\u6642\u4efb", "value": 4}, {"source": "\u6642\u4efb", "target": "\u962a\u67f3", "value": 16}, {"source": "\u6e21\u908a", "target": "\u962a\u67f3", "value": 4}, {"source": "\u7db2\u5009", "target": "\u962a\u67f3", "value": 4}, {"source": "\u897f\u91ce", "target": "\u962a\u67f3", "value": 4}, {"source": "\u65e5\u548c", "target": "\u91d1\u7530", "value": 12}, {"source": "\u7684\u5834", "target": "\u7dbe\u5c0f\u8def", "value": 4}, {"source": "\u5c71\u6751", "target": "\u65e5\u548c", "value": 9}, {"source": "\u5c0f\u7f8e", "target": "\u9b3c\u982d", "value": 3}, {"source": "\u4f0a\u5439", "target": "\u5c71\u6751", "value": 5}, {"source": "\u5800\u5317", "target": "\u5c71\u6751", "value": 8}, {"source": "\u4e00\u4e4b\u7028", "target": "\u7db2\u5009", "value": 36}, {"source": "\u5c71\u6751", "target": "\u5e73\u7530", "value": 3}, {"source": "\u5929\u6fa4", "target": "\u9b3c\u982d", "value": 3}, {"source": "\u5c71\u6751", "target": "\u8f15\u4e95\u6fa4", "value": 4}, {"source": "\u76f4\u6c5f", "target": "\u7dbe\u5c0f\u8def", "value": 33}, {"source": "\u76f4\u6c5f", "target": "\u9d28\u5ddd", "value": 20}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u9d28\u5ddd", "value": 26}, {"source": "\u76f4\u6c5f", "target": "\u962a\u67f3", "value": 11}, {"source": "\u6708\u57ce", "target": "\u76f4\u6c5f", "value": 8}, {"source": "\u6708\u57ce", "target": "\u7dbe\u5c0f\u8def\u5148\u751f", "value": 7}, {"source": "\u76f4\u6c5f", "target": "\u7dbe\u5c0f\u8def\u5148\u751f", "value": 9}, {"source": "\u7dbe\u5c0f\u8def\u5148\u751f", "target": "\u9234\u61f8", "value": 3}, {"source": "\u7dbe\u5c0f\u8def\u5148\u751f", "target": "\u9d28\u5ddd", "value": 9}, {"source": "\u7dbe\u5c0f\u8def", "target": "\u9234\u61f8", "value": 10}, {"source": "\u9234\u61f8", "target": "\u962a\u67f3", "value": 6}, {"source": "\u6559\u5b98", "target": "\u7dbe\u5c0f\u8def", "value": 7}, {"source": "\u6708\u57ce", "target": "\u9d28\u5ddd", "value": 3}, {"source": "\u4e00\u4e4b\u7028", "target": "\u9b3c\u9f8d\u9662", "value": 5}, {"source": "\u5357\u4e91", "target": "\u5c71\u4e2d", "value": 13}, {"source": "\u5c71\u4e2d", "target": "\u7dbe\u5c0f\u8def", "value": 8}, {"source": "\u5c71\u4e2d", "target": "\u9b3c\u9f8d\u9662", "value": 13}, {"source": "\u5800\u5317", "target": "\u5c71\u4e2d", "value": 6}, {"source": "\u59ec\u91ce", "target": "\u6e21\u908a", "value": 19}, {"source": "\u59ec\u91ce", "target": "\u7db2\u5009", "value": 18}, {"source": "\u6e21\u908a", "target": "\u795e\u5d0e", "value": 28}, {"source": "\u4e00\u4e4b\u7028", "target": "\u6e21\u908a", "value": 29}, {"source": "\u59ec\u91ce", "target": "\u8f15\u4e95\u6fa4", "value": 5}, {"source": "\u59ec\u91ce", "target": "\u6ff1\u53e3", "value": 9}, {"source": "\u6e21\u908a", "target": "\u6ff1\u53e3", "value": 7}, {"source": "\u7db2\u5009", "target": "\u8f15\u4e95\u6fa4", "value": 5}, {"source": "\u6a4b\u672c", "target": "\u91d1\u7530", "value": 5}, {"source": "\u5929\u6fa4", "target": "\u671d\u6bd4\u5948", "value": 3}, {"source": "\u671d\u6bd4\u5948", "target": "\u9b3c\u9f8d\u9662", "value": 11}, {"source": "\u5c71\u4e2d", "target": "\u671d\u6bd4\u5948", "value": 5}, {"source": "\u8f15\u4e95\u6fa4", "target": "\u9b3c\u9f8d\u9662", "value": 3}, {"source": "\u6adb\u7530", "target": "\u9b3c\u9f8d\u9662", "value": 3}, {"source": "\u5c71\u4e2d", "target": "\u6850\u5c71", "value": 5}, {"source": "\u524d\u5712", "target": "\u9577\u8c37\u90e8", "value": 3}, {"source": "\u771f\u7530", "target": "\u7dbe\u5c0f\u8def", "value": 17}, {"source": "\u771f\u7530", "target": "\u962a\u67f3", "value": 11}, {"source": "\u5c71\u6751", "target": "\u845b\u57ce", "value": 8}, {"source": "\u68ee\u4e0b", "target": "\u771f\u7530", "value": 10}, {"source": "\u68ee\u4e0b", "target": "\u7dbe\u5c0f\u8def", "value": 92}, {"source": "\u68ee\u4e0b", "target": "\u9ad8\u5713\u5bfa", "value": 4}, {"source": "\u690e\u540d", "target": "\u9b3c\u982d", "value": 3}, {"source": "\u5800\u5317", "target": "\u68ee\u4e0b", "value": 12}, {"source": "\u68ee\u4e0b", "target": "\u962a\u67f3", "value": 23}, {"source": "\u68ee\u4e0b", "target": "\u8f15\u4e95\u6fa4", "value": 5}, {"source": "\u5bae\u672c", "target": "\u672c\u5802", "value": 3}, {"source": "\u524d\u5712", "target": "\u962a\u67f3", "value": 3}, {"source": "\u5c71\u6751", "target": "\u6a4b\u672c", "value": 25}, {"source": "\u5c71\u6751", "target": "\u795e\u5ba4", "value": 6}, {"source": "\u4e00\u4e4b\u7028", "target": "\u5c71\u6751", "value": 3}, {"source": "\u5c71\u6751", "target": "\u68ee\u4e0b", "value": 30}, {"source": "\u5409\u7530", "target": "\u6a4b\u672c", "value": 13}, {"source": "\u6a4b\u672c", "target": "\u771f\u7530", "value": 14}, {"source": "\u771f\u7530", "target": "\u9b3c\u982d", "value": 6}, {"source": "\u68ee\u4e0b", "target": "\u6a4b\u672c", "value": 72}, {"source": "\u5c71\u6751", "target": "\u9b3c\u9f8d\u9662", "value": 6}, {"source": "\u65e5\u548c", "target": "\u9b3c\u9f8d\u9662", "value": 4}, {"source": "\u6a4b\u672c", "target": "\u9b3c\u9f8d\u9662", "value": 11}, {"source": "\u4e95\u4e4b\u982d", "target": "\u65e5\u548c", "value": 3}, {"source": "\u65e5\u548c", "target": "\u68ee\u4e0b", "value": 9}, {"source": "\u5800\u5317", "target": "\u771f\u7530", "value": 5}, {"source": "\u5c71\u6751", "target": "\u771f\u7530", "value": 6}, {"source": "\u65e5\u548c", "target": "\u771f\u7530", "value": 3}, {"source": "\u68ee\u4e0b", "target": "\u9b3c\u982d", "value": 5}, {"source": "\u5bf6\u6cc9", "target": "\u6642\u4efb", "value": 4}, {"source": "\u5929\u6fa4", "target": "\u6a4b\u672c", "value": 3}, {"source": "\u771f\u5d8b", "target": "\u771f\u7530", "value": 3}, {"source": "\u771f\u7530", "target": "\u845b\u57ce", "value": 6}, {"source": "\u771f\u7530", "target": "\u897f\u91ce", "value": 5}, {"source": "\u771f\u7530", "target": "\u9f8d\u5712", "value": 3}, {"source": "\u5c0f\u5bae", "target": "\u68ee\u4e0b", "value": 3}, {"source": "\u68ee\u4e0b", "target": "\u9f8d\u5712", "value": 14}, {"source": "\u677e\u4e0b", "target": "\u68ee\u4e0b", "value": 5}, {"source": "\u68ee\u4e0b", "target": "\u77f3\u5d0e", "value": 5}, {"source": "\u68ee\u4e0b", "target": "\u91d1\u7530", "value": 3}, {"source": "\u5cf6\u5d0e", "target": "\u68ee\u4e0b", "value": 16}, {"source": "\u5cf6\u5d0e", "target": "\u91d1\u7530", "value": 4}, {"source": "\u5cf6\u5d0e", "target": "\u962a\u67f3", "value": 3}, {"source": "\u5cf6\u5d0e", "target": "\u9f8d\u5712", "value": 14}, {"source": "\u4e00\u4e4b\u7028", "target": "\u68ee\u4e0b", "value": 12}, {"source": "\u67f4\u7530", "target": "\u6e21\u908a", "value": 4}, {"source": "\u5800\u5317", "target": "\u767d\u77f3", "value": 11}, {"source": "\u767d\u77f3", "target": "\u7dbe\u5c0f\u8def", "value": 58}, {"source": "\u5409\u7530", "target": "\u767d\u77f3", "value": 19}, {"source": "\u5409\u7530", "target": "\u5c71\u6751", "value": 3}, {"source": "\u5409\u7530", "target": "\u68ee\u4e0b", "value": 13}, {"source": "\u5409\u7530", "target": "\u771f\u7530", "value": 3}, {"source": "\u68ee\u4e0b", "target": "\u771f\u5d8b", "value": 5}, {"source": "\u5cf6\u5d0e", "target": "\u6a4b\u672c", "value": 25}, {"source": "\u5cf6\u5d0e", "target": "\u771f\u7530", "value": 6}, {"source": "\u5cf6\u5d0e", "target": "\u7dbe\u5c0f\u8def", "value": 32}, {"source": "\u5409\u7530", "target": "\u897f\u5ddd", "value": 11}, {"source": "\u68ee\u4e0b", "target": "\u767d\u77f3", "value": 32}, {"source": "\u68ee\u4e0b", "target": "\u897f\u5ddd", "value": 8}, {"source": "\u767d\u77f3", "target": "\u897f\u5ddd", "value": 17}, {"source": "\u5409\u7530", "target": "\u8f15\u4e95\u6fa4", "value": 3}, {"source": "\u767d\u77f3", "target": "\u8f15\u4e95\u6fa4", "value": 3}, {"source": "\u5c0f\u5bae", "target": "\u6a4b\u672c", "value": 3}, {"source": "\u5800\u5317", "target": "\u5cf6\u5d0e", "value": 5}, {"source": "\u5cf6\u5d0e", "target": "\u77f3\u5d0e", "value": 4}, {"source": "\u4f0a\u5439", "target": "\u5cf6\u5d0e", "value": 5}, {"source": "\u5cf6\u5d0e", "target": "\u9b3c\u982d", "value": 4}, {"source": "\u4e00\u4e4b\u7028", "target": "\u5cf6\u5d0e", "value": 7}, {"source": "\u4e00\u4e4b\u7028", "target": "\u767d\u77f3", "value": 7}, {"source": "\u6a4b\u672c", "target": "\u767d\u77f3", "value": 40}, {"source": "\u767d\u77f3", "target": "\u9f8d\u5712", "value": 6}, {"source": "\u4e03\u7028", "target": "\u68ee\u4e0b", "value": 4}, {"source": "\u4e03\u7028", "target": "\u767d\u77f3", "value": 5}, {"source": "\u690e\u540d", "target": "\u91d1\u7530", "value": 8}, {"source": "\u5cf6\u5d0e", "target": "\u9ad8\u5713\u5bfa", "value": 4}, {"source": "\u5409\u7530", "target": "\u5cf6\u5d0e", "value": 19}, {"source": "\u5cf6\u5d0e", "target": "\u767d\u77f3", "value": 17}, {"source": "\u5409\u7530", "target": "\u9b3c\u982d", "value": 4}, {"source": "\u767d\u77f3", "target": "\u9b3c\u982d", "value": 6}, {"source": "\u897f\u5ddd", "target": "\u9b3c\u982d", "value": 8}, {"source": "\u5800\u5317", "target": "\u897f\u5ddd", "value": 4}, {"source": "\u6a4b\u672c", "target": "\u8fd1\u85e4", "value": 3}, {"source": "\u5c71\u6751", "target": "\u767d\u77f3", "value": 5}, {"source": "\u5c71\u6751", "target": "\u897f\u5ddd", "value": 3}, {"source": "\u767d\u77f3", "target": "\u771f\u5d8b", "value": 3}, {"source": "\u4f0a\u5439", "target": "\u767d\u77f3", "value": 3}, {"source": "\u68ee\u4e0b", "target": "\u7684\u5834", "value": 4}, {"source": "\u6a4b\u672c", "target": "\u7684\u5834", "value": 7}, {"source": "\u5cf6\u5d0e", "target": "\u7af9\u672c", "value": 6}, {"source": "\u5cf6\u5d0e", "target": "\u897f\u5ddd", "value": 6}, {"source": "\u767d\u77f3", "target": "\u771f\u7530", "value": 5}, {"source": "\u767d\u77f3", "target": "\u7af9\u672c", "value": 7}, {"source": "\u771f\u7530", "target": "\u7af9\u672c", "value": 3}, {"source": "\u771f\u7530", "target": "\u897f\u5ddd", "value": 3}, {"source": "\u6a4b\u672c", "target": "\u7af9\u672c", "value": 10}, {"source": "\u7af9\u672c", "target": "\u9b3c\u982d", "value": 3}, {"source": "\u767d\u77f3", "target": "\u9ad8\u5713\u5bfa", "value": 5}, {"source": "\u68ee\u4e0b", "target": "\u7af9\u672c", "value": 3}, {"source": "\u767d\u77f3", "target": "\u795e\u5d0e", "value": 7}, {"source": "\u795e\u5d0e", "target": "\u7af9\u672c", "value": 4}, {"source": "\u5cf6\u5d0e", "target": "\u795e\u5d0e", "value": 3}];
+const stats = {"chunks": 5058, "nonemptyChunks": 4828, "characters": 743, "shownCharacters": 90, "cooccurrencePairs": 6087, "shownLinks": 1001, "minLink": 3};
+
+const state = { selected: null };
+const svg = d3.select("#network");
+const layer = svg.append("g");
+const linkLayer = layer.append("g");
+const nodeLayer = layer.append("g");
+
+const els = {
+  metrics: document.getElementById("metrics"),
+  threshold: document.getElementById("threshold"),
+  thresholdLabel: document.getElementById("thresholdLabel"),
+  topN: document.getElementById("topN"),
+  topLabel: document.getElementById("topLabel"),
+  labels: document.getElementById("labels"),
+  weakLinks: document.getElementById("weakLinks"),
+  search: document.getElementById("search"),
+  sideTitle: document.getElementById("sideTitle"),
+  sideContent: document.getElementById("sideContent"),
+  tooltip: document.getElementById("tooltip"),
+};
+
+const fmt = new Intl.NumberFormat("en-US");
+const color = d3.scaleSequential()
+  .domain([0, d3.max(rawNodes, d => d.count)])
+  .interpolator(d3.interpolateMagma);
+const radius = d3.scaleSqrt()
+  .domain([0, d3.max(rawNodes, d => d.count)])
+  .range([5, 34]);
+
+svg.call(d3.zoom().scaleExtent([0.18, 5]).on("zoom", event => {
+  layer.attr("transform", event.transform);
+}));
+
+let simulation = null;
+
+function renderMetrics(nodes, links) {
+  els.metrics.innerHTML = [
+    ["Chunks", stats.chunks],
+    ["Cache hits", stats.nonemptyChunks],
+    ["Characters", nodes.length],
+    ["Links", links.length],
+  ].map(([label, value]) => `<div class="metric"><b>${fmt.format(value)}</b><span>${label}</span></div>`).join("");
+}
+
+function filteredGraph() {
+  const threshold = Number(els.threshold.value);
+  const topN = Number(els.topN.value);
+  const query = els.search.value.trim().toLowerCase();
+  const topSet = new Set(rawNodes.slice(0, topN).map(d => d.id));
+  const nodes = rawNodes.filter(d => topSet.has(d.id) && (!query || d.id.toLowerCase().includes(query)));
+  const nodeSet = new Set(nodes.map(d => d.id));
+  const links = rawLinks.filter(d =>
+    d.value >= threshold &&
+    nodeSet.has(d.source) &&
+    nodeSet.has(d.target)
+  );
+  const linked = new Set(links.flatMap(d => [d.source, d.target]));
+  const activeNodes = nodes.filter(d => linked.has(d.id) || query);
+  return { nodes: activeNodes, links };
+}
+
+function render() {
+  const threshold = Number(els.threshold.value);
+  const topN = Number(els.topN.value);
+  els.thresholdLabel.textContent = threshold;
+  els.topLabel.textContent = topN;
+
+  const { nodes, links } = filteredGraph();
+  renderMetrics(nodes, links);
+  renderSidePanel(nodes, links);
+
+  if (simulation) simulation.stop();
+  linkLayer.selectAll("*").remove();
+  nodeLayer.selectAll("*").remove();
+
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  svg.attr("viewBox", [0, 0, width, height]);
+
+  const nodeById = new Map(nodes.map(d => [d.id, { ...d }]));
+  const graphLinks = links
+    .map(d => ({ ...d, source: nodeById.get(d.source), target: nodeById.get(d.target) }))
+    .filter(d => d.source && d.target);
+  const graphNodes = [...nodeById.values()];
+
+  simulation = d3.forceSimulation(graphNodes)
+    .force("link", d3.forceLink(graphLinks).id(d => d.id).distance(d => Math.max(45, 190 / Math.log(d.value + 2))).strength(d => Math.min(0.9, 0.18 + d.value / 80)))
+    .force("charge", d3.forceManyBody().strength(d => -180 - radius(d.count) * 8))
+    .force("center", d3.forceCenter(width / 2, height / 2))
+    .force("collision", d3.forceCollide(d => radius(d.count) + 8));
+
+  const link = linkLayer.selectAll("line")
+    .data(graphLinks)
+    .join("line")
+    .attr("class", d => `link ${!els.weakLinks.checked && d.value < threshold * 2 ? "hidden" : ""}`)
+    .attr("stroke-width", d => Math.max(1, Math.sqrt(d.value) * 0.85));
+
+  const node = nodeLayer.selectAll("g")
+    .data(graphNodes)
+    .join("g")
+    .attr("class", "node")
+    .call(d3.drag()
+      .on("start", dragStart)
+      .on("drag", dragged)
+      .on("end", dragEnd));
+
+  node.append("circle")
+    .attr("r", d => radius(d.count))
+    .attr("fill", d => color(d.count))
+    .on("mousemove", (event, d) => showTip(event, nodeTip(d, graphLinks)))
+    .on("mouseleave", hideTip)
+    .on("click", (event, d) => selectNode(d, node, link, graphLinks));
+
+  node.append("text")
+    .attr("text-anchor", "middle")
+    .attr("dy", d => -radius(d.count) - 7)
+    .text(d => d.id)
+    .style("display", els.labels.checked ? null : "none");
+
+  simulation.on("tick", () => {
+    link
+      .attr("x1", d => d.source.x)
+      .attr("y1", d => d.source.y)
+      .attr("x2", d => d.target.x)
+      .attr("y2", d => d.target.y);
+    node.attr("transform", d => `translate(${d.x},${d.y})`);
+  });
+}
+
+function renderSidePanel(nodes, links) {
+  const sorted = [...links].sort((a, b) => b.value - a.value).slice(0, 14);
+  els.sideTitle.textContent = "Top co-occurrence";
+  if (!sorted.length) {
+    els.sideContent.innerHTML = "<p>目前篩選沒有共現連結。</p>";
+    return;
+  }
+  els.sideContent.innerHTML = `<ol>${sorted.map(d =>
+    `<li><b>${escapeHtml(d.source)}</b> - <b>${escapeHtml(d.target)}</b>：${fmt.format(d.value)} chunks</li>`
+  ).join("")}</ol>`;
+}
+
+function nodeTip(d, links) {
+  const related = links
+    .filter(l => l.source.id === d.id || l.target.id === d.id)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8)
+    .map(l => {
+      const other = l.source.id === d.id ? l.target.id : l.source.id;
+      return `${escapeHtml(other)} (${fmt.format(l.value)})`;
+    });
+  return `<b>${escapeHtml(d.id)}</b><br>出現 chunks：${fmt.format(d.count)}<br>常一起出現：${related.join(", ") || "無"}`;
+}
+
+function selectNode(d, node, link, links) {
+  if (state.selected === d.id) {
+    state.selected = null;
+    node.classed("dimmed", false);
+    link.classed("dimmed", false);
+    return;
+  }
+  state.selected = d.id;
+  const connected = new Set([d.id]);
+  links.forEach(l => {
+    if (l.source.id === d.id) connected.add(l.target.id);
+    if (l.target.id === d.id) connected.add(l.source.id);
+  });
+  node.classed("dimmed", nd => !connected.has(nd.id));
+  link.classed("dimmed", l => l.source.id !== d.id && l.target.id !== d.id);
+}
+
+function showTip(event, html) {
+  els.tooltip.innerHTML = html;
+  els.tooltip.style.opacity = 1;
+  els.tooltip.style.left = `${event.clientX + 14}px`;
+  els.tooltip.style.top = `${event.clientY - 10}px`;
+}
+
+function hideTip() {
+  els.tooltip.style.opacity = 0;
+}
+
+function dragStart(event, d) {
+  if (!event.active) simulation.alphaTarget(0.3).restart();
+  d.fx = d.x;
+  d.fy = d.y;
+}
+
+function dragged(event, d) {
+  d.fx = event.x;
+  d.fy = event.y;
+}
+
+function dragEnd(event, d) {
+  if (!event.active) simulation.alphaTarget(0);
+  d.fx = null;
+  d.fy = null;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+[els.threshold, els.topN, els.labels, els.weakLinks, els.search].forEach(el => {
+  el.addEventListener("input", render);
+});
+window.addEventListener("resize", render);
+
+render();
+</script>
+</body>
+</html>

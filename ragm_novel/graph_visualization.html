@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAG Memory - Story Graph</title>
+<link rel="icon" href="data:,">
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  :root {
+    --bg: #10100e;
+    --panel: #181814;
+    --panel-2: #202017;
+    --ink: #f2ebdc;
+    --muted: #aaa18e;
+    --line: #3c382d;
+    --gold: #d7a84d;
+    --cyan: #72b7bb;
+    --green: #92b66b;
+    --rose: #d47766;
+    --violet: #9a8fcb;
+    --shadow: rgba(0, 0, 0, 0.38);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background:
+      linear-gradient(90deg, rgba(215,168,77,0.05) 1px, transparent 1px),
+      linear-gradient(180deg, rgba(215,168,77,0.04) 1px, transparent 1px),
+      radial-gradient(circle at 18% 8%, rgba(114,183,187,0.12), transparent 28rem),
+      radial-gradient(circle at 84% 16%, rgba(212,119,102,0.10), transparent 30rem),
+      var(--bg);
+    background-size: 32px 32px, 32px 32px, auto, auto, auto;
+    color: var(--ink);
+    font-family: "Georgia", "Times New Roman", "Noto Serif TC", serif;
+  }
+
+  .shell { max-width: 1500px; margin: 0 auto; padding: 28px; }
+
+  header {
+    display: grid;
+    grid-template-columns: minmax(280px, 1fr) auto;
+    gap: 28px;
+    align-items: end;
+    padding: 18px 0 26px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .eyebrow {
+    color: var(--gold);
+    font: 700 12px/1.2 "Consolas", "Courier New", monospace;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+
+  h1 {
+    margin: 8px 0 0;
+    max-width: 900px;
+    font-size: clamp(34px, 5vw, 72px);
+    line-height: 0.92;
+    letter-spacing: 0;
+  }
+
+  .subtitle {
+    margin: 16px 0 0;
+    max-width: 760px;
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1.65;
+  }
+
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(110px, 1fr));
+    gap: 10px;
+    min-width: min(620px, 100%);
+  }
+
+  .metric {
+    border: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.012));
+    padding: 14px;
+    min-height: 88px;
+  }
+
+  .metric b {
+    display: block;
+    font: 700 26px/1 "Consolas", "Courier New", monospace;
+    color: var(--ink);
+  }
+
+  .metric span {
+    display: block;
+    margin-top: 9px;
+    color: var(--muted);
+    font: 700 11px/1.2 "Consolas", "Courier New", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 300px minmax(0, 1fr);
+    gap: 22px;
+    margin-top: 22px;
+  }
+
+  aside {
+    align-self: start;
+    position: sticky;
+    top: 16px;
+    border: 1px solid var(--line);
+    background: rgba(24, 24, 20, 0.86);
+    box-shadow: 0 18px 44px var(--shadow);
+    padding: 18px;
+  }
+
+  label {
+    display: block;
+    margin: 0 0 14px;
+    color: var(--muted);
+    font: 700 11px/1.2 "Consolas", "Courier New", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+  }
+
+  select, input {
+    width: 100%;
+    margin-top: 7px;
+    border: 1px solid var(--line);
+    background: #0f100d;
+    color: var(--ink);
+    padding: 10px 11px;
+    font: 14px/1.2 "Consolas", "Courier New", monospace;
+    outline: none;
+  }
+
+  select:focus, input:focus { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(215,168,77,0.18); }
+
+  .segmented {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+    padding: 4px;
+    background: #0f100d;
+    border: 1px solid var(--line);
+  }
+
+  .segmented button {
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    padding: 9px 7px;
+    cursor: pointer;
+    font: 700 12px/1 "Consolas", "Courier New", monospace;
+  }
+
+  .segmented button.active {
+    background: var(--gold);
+    color: #17130a;
+  }
+
+  .hint {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.55;
+    margin-top: 14px;
+  }
+
+  main { min-width: 0; }
+
+  .panel {
+    border: 1px solid var(--line);
+    background: rgba(24, 24, 20, 0.9);
+    box-shadow: 0 18px 44px var(--shadow);
+    margin-bottom: 18px;
+  }
+
+  .panel-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .panel-head h2 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  .panel-head span {
+    color: var(--muted);
+    font: 12px/1.2 "Consolas", "Courier New", monospace;
+  }
+
+  #chart { overflow-x: auto; min-height: 520px; }
+  svg { display: block; }
+  .axis text { fill: var(--muted); font-family: "Consolas", "Courier New", monospace; }
+  .axis path, .axis line { stroke: var(--line); }
+  .grid line { stroke: rgba(170,161,142,0.16); }
+  .grid path { display: none; }
+
+  .tooltip {
+    position: fixed;
+    z-index: 20;
+    pointer-events: none;
+    opacity: 0;
+    transform: translate(12px, -12px);
+    max-width: 360px;
+    border: 1px solid var(--gold);
+    background: #10100e;
+    color: var(--ink);
+    padding: 12px 14px;
+    box-shadow: 0 18px 40px var(--shadow);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .tooltip b { color: var(--gold); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+
+  th, td {
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(170,161,142,0.16);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  th {
+    color: var(--gold);
+    font: 700 11px/1.2 "Consolas", "Courier New", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  td.num {
+    font-family: "Consolas", "Courier New", monospace;
+    color: var(--cyan);
+    white-space: nowrap;
+  }
+
+  tbody tr:hover { background: rgba(215,168,77,0.06); }
+  .table-wrap { max-height: 520px; overflow: auto; }
+
+  .empty {
+    padding: 42px;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  @media (max-width: 980px) {
+    .shell { padding: 18px; }
+    header { grid-template-columns: 1fr; }
+    .metrics { grid-template-columns: repeat(2, 1fr); }
+    .layout { grid-template-columns: 1fr; }
+    aside { position: static; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div>
+      <div class="eyebrow">RAG Memory / Story Graph</div>
+      <h1>小說 chunk 結構視覺化</h1>
+      <p class="subtitle">從 graph_edges.jsonl 聚合章節節點與 next / prev 邊，檢查哪些章節被切得過密、哪些卷的敘事跨度最大。</p>
+    </div>
+    <section class="metrics" id="metrics"></section>
+  </header>
+
+  <div class="layout">
+    <aside>
+      <label>視圖
+        <div class="segmented" id="modeButtons">
+          <button data-mode="bars" class="active">Density</button>
+          <button data-mode="timeline">Spine</button>
+          <button data-mode="table">Index</button>
+        </div>
+      </label>
+      <label>書籍
+        <select id="titleFilter"></select>
+      </label>
+      <label>分卷
+        <select id="volumeFilter"></select>
+      </label>
+      <label>搜尋章節
+        <input id="searchInput" type="search" placeholder="例如：游泳池 / 特典 / 第七卷">
+      </label>
+      <label>最少 chunks
+        <input id="minChunks" type="range" min="0" max="200" value="0">
+      </label>
+      <div class="hint" id="rangeLabel"></div>
+      <div class="hint">Density 用來找異常大章節；Spine 看分卷節奏；Index 可排序檢查具體章節。</div>
+    </aside>
+
+    <main>
+      <section class="panel">
+        <div class="panel-head">
+          <h2 id="panelTitle">Chapter Density</h2>
+          <span id="panelMeta"></span>
+        </div>
+        <div id="chart"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Chapter Index</h2>
+          <span>click headers to sort</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th data-sort="volume">Volume</th>
+                <th data-sort="chapter">Chapter</th>
+                <th data-sort="chunks">Chunks</th>
+                <th data-sort="edges">Edges</th>
+              </tr>
+            </thead>
+            <tbody id="chapterRows"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const rawData = [{"title": "\u6b61\u8fce\u4f86\u5230\u5be6\u529b\u81f3\u4e0a\u4e3b\u7fa9\u7684\u6559\u5ba4", "chapters": [{"chapter": "\u7b2c\u4e00\u5377 \u6b61\u8fce\u4f86\u5230\u5922\u5e7b\u822c\u7684\u6821\u5712\u751f\u6d3b", "volume": "\u7b2c\u4e00\u5377", "chunks": 88, "nextEdges": 23, "prevEdges": 23, "edges": 46}, {"chapter": "\u7b2c\u4e00\u5377 D\u73ed\u7684\u5404\u4f4d", "volume": "\u7b2c\u4e00\u5377", "chunks": 53, "nextEdges": 9, "prevEdges": 9, "edges": 18}, {"chapter": "\u7b2c\u4e00\u5377 \u5404\u4f4d\u7537\u58eb\uff0c\u4e45\u7b49\u4e86", "volume": "\u7b2c\u4e00\u5377", "chunks": 70, "nextEdges": 9, "prevEdges": 9, "edges": 18}, {"chapter": "\u7b2c\u4e00\u5377 \u670b\u53cb", "volume": "\u7b2c\u4e00\u5377", "chunks": 41, "nextEdges": 8, "prevEdges": 8, "edges": 16}, {"chapter": "\u7b2c\u4e00\u5377 \u7d42\u7d50\u7684\u65e5\u5e38", "volume": "\u7b2c\u4e00\u5377", "chunks": 72, "nextEdges": 10, "prevEdges": 10, "edges": 20}, {"chapter": "\u7b2c\u4e00\u5377 \u6b61\u8fce\u4f86\u5230\u5be6\u529b\u81f3\u4e0a\u4e3b\u7fa9\u7684\u4e16\u754c", "volume": "\u7b2c\u4e00\u5377", "chunks": 121, "nextEdges": 20, "prevEdges": 20, "edges": 40}, {"chapter": "\u7b2c\u4e00\u5377 \u96c6\u5408\u5427\uff0c\u4e0d\u53ca\u683c\u7d44", "volume": "\u7b2c\u4e00\u5377", "chunks": 99, "nextEdges": 30, "prevEdges": 30, "edges": 60}, {"chapter": "\u7b2c\u4e00\u5377 \u518d\u6b21\u96c6\u5408\u7684\u4e0d\u53ca\u683c\u7d44", "volume": "\u7b2c\u4e00\u5377", "chunks": 105, "nextEdges": 20, "prevEdges": 20, "edges": 40}, {"chapter": "\u7b2c\u4e00\u5377 \u671f\u4e2d\u8003", "volume": "\u7b2c\u4e00\u5377", "chunks": 55, "nextEdges": 5, "prevEdges": 5, "edges": 10}, {"chapter": "\u7b2c\u4e00\u5377 \u958b\u59cb", "volume": "\u7b2c\u4e00\u5377", "chunks": 54, "nextEdges": 6, "prevEdges": 6, "edges": 12}, {"chapter": "\u7b2c\u4e00\u5377 \u6176\u529f\u5bb4", "volume": "\u7b2c\u4e00\u5377", "chunks": 45, "nextEdges": 3, "prevEdges": 3, "edges": 6}, {"chapter": "\u7b2c\u4e00\u5377 GAMERS\u7279\u5178\u77ed\u7bc7", "volume": "\u7b2c\u4e00\u5377", "chunks": 14, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e00\u5377 \u7279\u5178 \u67d0\u5929\u5348\u524d\u7684\u6e38\u6cf3\u6c60", "volume": "\u7b2c\u4e00\u5377", "chunks": 41, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u4e00\u5377 \u7279\u5178 happy\uff0eunhappy\uff1f", "volume": "\u7b2c\u4e00\u5377", "chunks": 45, "nextEdges": 4, "prevEdges": 4, "edges": 8}, {"chapter": "\u7b2c\u4e8c\u5377 \u7a81\u5982\u5176\u4f86\u7684\u98a8\u6ce2\u958b\u7aef", "volume": "\u7b2c\u4e8c\u5377", "chunks": 118, "nextEdges": 17, "prevEdges": 17, "edges": 34}, {"chapter": "\u7b2c\u4e8c\u5377 weak point", "volume": "\u7b2c\u4e8c\u5377", "chunks": 90, "nextEdges": 15, "prevEdges": 15, "edges": 30}, {"chapter": "\u7b2c\u4e8c\u5377 \u610f\u5916\u7684\u76ee\u64ca\u8005", "volume": "\u7b2c\u4e8c\u5377", "chunks": 180, "nextEdges": 52, "prevEdges": 52, "edges": 104}, {"chapter": "\u7b2c\u4e8c\u5377 \u5404\u6709\u6240\u5716", "volume": "\u7b2c\u4e8c\u5377", "chunks": 106, "nextEdges": 17, "prevEdges": 17, "edges": 34}, {"chapter": "\u7b2c\u4e8c\u5377 \u771f\u5be6\u8207\u8b0a\u8a00", "volume": "\u7b2c\u4e8c\u5377", "chunks": 131, "nextEdges": 18, "prevEdges": 18, "edges": 36}, {"chapter": "\u7b2c\u4e8c\u5377 \u552f\u4e00\u7684\u89e3\u6c7a\u65b9\u6848", "volume": "\u7b2c\u4e8c\u5377", "chunks": 138, "nextEdges": 22, "prevEdges": 22, "edges": 44}, {"chapter": "\u7b2c\u4e8c\u5377 \u7279\u5178 \u5800\u5317\u9234\u97f3\u7684\u9810\u5146", "volume": "\u7b2c\u4e8c\u5377", "chunks": 57, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u4e8c\u5377 \u7279\u5178 \u81ea\u5df1\u7684\u5bb9\u8eab\u4e4b\u8655", "volume": "\u7b2c\u4e8c\u5377", "chunks": 32, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e09\u5377 \u5929\u5802\u8207\u5730\u7344\u7684\u754c\u7dda", "volume": "\u7b2c\u4e09\u5377", "chunks": 248, "nextEdges": 57, "prevEdges": 57, "edges": 114}, {"chapter": "\u7b2c\u4e09\u5377 \u5c55\u958b\u884c\u52d5\u7684\u5c0d\u624b\u5011", "volume": "\u7b2c\u4e09\u5377", "chunks": 157, "nextEdges": 18, "prevEdges": 18, "edges": 36}, {"chapter": "\u7b2c\u4e09\u5377 \u81ea\u7531\u7684\u610f\u7fa9", "volume": "\u7b2c\u4e09\u5377", "chunks": 78, "nextEdges": 7, "prevEdges": 7, "edges": 14}, {"chapter": "\u7b2c\u4e09\u5377 \u5bc2\u975c\u5730\u958b\u6230", "volume": "\u7b2c\u4e09\u5377", "chunks": 105, "nextEdges": 9, "prevEdges": 9, "edges": 18}, {"chapter": "\u7b2c\u4e09\u5377 \u865b\u5047\u7684\u5718\u968a\u5408\u4f5c", "volume": "\u7b2c\u4e09\u5377", "chunks": 149, "nextEdges": 47, "prevEdges": 47, "edges": 94}, {"chapter": "\u7b2c\u4e09\u5377 \u958b\u5e55", "volume": "\u7b2c\u4e09\u5377", "chunks": 160, "nextEdges": 12, "prevEdges": 12, "edges": 24}, {"chapter": "\u7b2c\u4e09\u5377 \u7279\u5178 \u91cd\u8981\u7684\u6642\u9593", "volume": "\u7b2c\u4e09\u5377", "chunks": 71, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e09\u5377 \u7279\u5178 \u4e00\u4e4b\u7028\u5e06\u6ce2\u7684\u8003\u8a66\u72c0\u6cc1", "volume": "\u7b2c\u4e09\u5377", "chunks": 27, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e09\u5377 \u7279\u5178 \u840c\u82bd\u4e4b\u7269", "volume": "\u7b2c\u4e09\u5377", "chunks": 30, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u56db\u5377 \u5e73\u7a69\u7684\u65e5\u5e38\u751f\u6d3b\u7a81\u7136\u9593\u5c31\u2026\u2026", "volume": "\u7b2c\u56db\u5377", "chunks": 261, "nextEdges": 35, "prevEdges": 35, "edges": 70}, {"chapter": "\u7b2c\u56db\u5377 \u5343\u5dee\u842c\u5225\u7684\u60f3\u6cd5", "volume": "\u7b2c\u56db\u5377", "chunks": 288, "nextEdges": 40, "prevEdges": 40, "edges": 80}, {"chapter": "\u7b2c\u56db\u5377 Double Question", "volume": "\u7b2c\u56db\u5377", "chunks": 282, "nextEdges": 53, "prevEdges": 53, "edges": 106}, {"chapter": "\u7b2c\u56db\u5377 \u5404\u81ea\u7684\u5dee\u8ddd", "volume": "\u7b2c\u56db\u5377", "chunks": 210, "nextEdges": 24, "prevEdges": 24, "edges": 48}, {"chapter": "\u7b2c\u56db\u5377 \u7279\u5178 \u7a00\u8584\u7684\u5b58\u5728", "volume": "\u7b2c\u56db\u5377", "chunks": 61, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u56db\u5377 \u7279\u5178 \u5728\u5922\u8207\u73fe\u5be6\u7684\u593e\u7e2b\u4e2d", "volume": "\u7b2c\u56db\u5377", "chunks": 394, "nextEdges": 148, "prevEdges": 148, "edges": 296}, {"chapter": "\u7b2c\u4e94\u5377 \u9ad4\u80b2\u796d\u958b\u5e55", "volume": "\u7b2c\u4e94\u5377", "chunks": 197, "nextEdges": 19, "prevEdges": 19, "edges": 38}, {"chapter": "\u7b2c\u4e94\u5377 D\u73ed\u7684\u65b9\u91dd", "volume": "\u7b2c\u4e94\u5377", "chunks": 162, "nextEdges": 12, "prevEdges": 12, "edges": 24}, {"chapter": "\u7b2c\u4e94\u5377 \u5404\u6709\u6240\u601d", "volume": "\u7b2c\u4e94\u5377", "chunks": 76, "nextEdges": 9, "prevEdges": 9, "edges": 18}, {"chapter": "\u7b2c\u4e94\u5377 \u95dc\u7cfb\u6f14\u8b8a\u81f3\u6b64\u662f\u6709\u7406\u7531\u7684", "volume": "\u7b2c\u4e94\u5377", "chunks": 105, "nextEdges": 11, "prevEdges": 11, "edges": 22}, {"chapter": "\u7b2c\u4e94\u5377 \u958b\u5e55", "volume": "\u7b2c\u4e94\u5377", "chunks": 307, "nextEdges": 44, "prevEdges": 44, "edges": 88}, {"chapter": "\u7b2c\u4e94\u5377 \u70ba\u4e86\u8ab0", "volume": "\u7b2c\u4e94\u5377", "chunks": 94, "nextEdges": 10, "prevEdges": 10, "edges": 20}, {"chapter": "\u7b2c\u4e94\u5377 \u6211\u4ee5\u53ca\u6211\u7684\u4e0d\u8db3\u4e4b\u8655", "volume": "\u7b2c\u4e94\u5377", "chunks": 88, "nextEdges": 14, "prevEdges": 14, "edges": 28}, {"chapter": "\u7b2c\u4e94\u5377 \u6642\u4ee3\u7684\u8f49\u6369\u9ede", "volume": "\u7b2c\u4e94\u5377", "chunks": 210, "nextEdges": 16, "prevEdges": 16, "edges": 32}, {"chapter": "\u7b2c\u4e94\u5377 \u7279\u5178 \u9ad4\u80b2\u796d \u2027 \u4e00\u4e4b\u7028\u7684\u6230\u6597", "volume": "\u7b2c\u4e94\u5377", "chunks": 64, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e94\u5377 \u7279\u5178 \u5c11\u5973\u5fa9\u96dc\u7684\u5fc3\u5883", "volume": "\u7b2c\u4e94\u5377", "chunks": 76, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u516d\u5377 \u6adb\u7530\u6a58\u6897\u7684\u7368\u767d", "volume": "\u7b2c\u516d\u5377", "chunks": 43, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u516d\u5377 \u9010\u6f38\u6539\u8b8a\u7684D\u73ed", "volume": "\u7b2c\u516d\u5377", "chunks": 146, "nextEdges": 10, "prevEdges": 10, "edges": 20}, {"chapter": "\u7b2c\u516d\u5377 Paper Shuffle", "volume": "\u7b2c\u516d\u5377", "chunks": 191, "nextEdges": 26, "prevEdges": 26, "edges": 52}, {"chapter": "\u7b2c\u516d\u5377 \u958b\u59cb\u884c\u52d5\u7684C\u73ed", "volume": "\u7b2c\u516d\u5377", "chunks": 191, "nextEdges": 11, "prevEdges": 11, "edges": 22}, {"chapter": "\u7b2c\u516d\u5377 \u6d3b\u8def\u7684\u5fb5\u5146", "volume": "\u7b2c\u516d\u5377", "chunks": 304, "nextEdges": 41, "prevEdges": 41, "edges": 82}, {"chapter": "\u7b2c\u516d\u5377 \u7d44\u6210\u7dbe\u5c0f\u8def\u7d44", "volume": "\u7b2c\u516d\u5377", "chunks": 213, "nextEdges": 26, "prevEdges": 26, "edges": 52}, {"chapter": "\u7b2c\u516d\u5377 \u6c7a\u5fc3\u7684\u5dee\u5225", "volume": "\u7b2c\u516d\u5377", "chunks": 180, "nextEdges": 19, "prevEdges": 19, "edges": 38}, {"chapter": "\u7b2c\u516d\u5377 \u7279\u5178 \u4e5f\u8a31\u80fd\u4ea4\u5230\u670b\u53cb", "volume": "\u7b2c\u516d\u5377", "chunks": 70, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u516d\u5377 \u7279\u5178 \u559c\u6b61\u7684\u4eba", "volume": "\u7b2c\u516d\u5377", "chunks": 46, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u516d\u5377 \u7279\u5178 \u962a\u67f3\u6709\u68f2\u7684\u65e5\u5e38\u2014\u2014\u671f\u672b\u8003\u8a66\u7684\u5e55\u5f8c\u7bc7", "volume": "\u7b2c\u516d\u5377", "chunks": 80, "nextEdges": 4, "prevEdges": 4, "edges": 8}, {"chapter": "\u7b2c\u4e03\u5377 \u56b4\u51ac\u7684\u8173\u6b65\u8072", "volume": "\u7b2c\u4e03\u5377", "chunks": 144, "nextEdges": 13, "prevEdges": 13, "edges": 26}, {"chapter": "\u7b2c\u4e03\u5377 \u518d\u6703\u8207\u96e2\u5225\u7684\u901a\u77e5", "volume": "\u7b2c\u4e03\u5377", "chunks": 262, "nextEdges": 43, "prevEdges": 43, "edges": 86}, {"chapter": "\u7b2c\u4e03\u5377 \u8d85\u812b\u5e38\u8b58", "volume": "\u7b2c\u4e03\u5377", "chunks": 200, "nextEdges": 14, "prevEdges": 14, "edges": 28}, {"chapter": "\u7b2c\u4e03\u5377 \u4e86\u65b7\u4e4b\u6642", "volume": "\u7b2c\u4e03\u5377", "chunks": 168, "nextEdges": 19, "prevEdges": 19, "edges": 38}, {"chapter": "\u7b2c\u4e03\u5377 \u4ea4\u932f\u7684\u601d\u7dd2", "volume": "\u7b2c\u4e03\u5377", "chunks": 224, "nextEdges": 30, "prevEdges": 30, "edges": 60}, {"chapter": "\u7b2c\u4e03\u5377 \u9f8d\u5712\u5f97\u5230\u4ee5\u53ca\u5931\u53bb\u4e4b\u7269", "volume": "\u7b2c\u4e03\u5377", "chunks": 73, "nextEdges": 4, "prevEdges": 4, "edges": 8}, {"chapter": "\u7b2c\u4e03\u5377 \u7279\u5178 \u5e0c\u671b\u6210\u70ba\u670b\u53cb", "volume": "\u7b2c\u4e03\u5377", "chunks": 26, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e03\u5377 \u7279\u5178 \u6211\uff0c\u9577\u8c37\u90e8\u6ce2\u7409\u52a0\u4e0d\u6253\u7b97\u505a\u51fa\u6539\u8b8a", "volume": "\u7b2c\u4e03\u5377", "chunks": 573, "nextEdges": 132, "prevEdges": 132, "edges": 264}, {"chapter": "\u7b2c\u516b\u5377 \u65b0\u7684\u7279\u5225\u8003\u8a66\u2500\u6df7\u5408\u5408\u5bbf\u2500", "volume": "\u7b2c\u516b\u5377", "chunks": 331, "nextEdges": 43, "prevEdges": 43, "edges": 86}, {"chapter": "\u7b2c\u516b\u5377 \u53d7\u8003\u9a57\u7684\u4eba\u6027", "volume": "\u7b2c\u516b\u5377", "chunks": 159, "nextEdges": 19, "prevEdges": 19, "edges": 38}, {"chapter": "\u7b2c\u516b\u5377 \u6557\u5317\u7684\u9810\u611f", "volume": "\u7b2c\u516b\u5377", "chunks": 243, "nextEdges": 19, "prevEdges": 19, "edges": 38}, {"chapter": "\u7b2c\u516b\u5377 \u5973\u751f\u5011\u7684\u6230\u6597\uff08\u524d\u534a\uff09\u4e00\u4e4b\u7028\u5e06\u6ce2", "volume": "\u7b2c\u516b\u5377", "chunks": 84, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u516b\u5377 \u96a8\u8655\u53ef\u898b\u4e4b\u7269", "volume": "\u7b2c\u516b\u5377", "chunks": 194, "nextEdges": 19, "prevEdges": 19, "edges": 38}, {"chapter": "\u7b2c\u516b\u5377 \u5931\u53bb\u7684\u6771\u897f\u3001\u4e0d\u6703\u5931\u53bb\u7684\u6771\u897f", "volume": "\u7b2c\u516b\u5377", "chunks": 132, "nextEdges": 13, "prevEdges": 13, "edges": 26}, {"chapter": "\u7b2c\u516b\u5377 \u5973\u751f\u5011\u7684\u6230\u6597\uff08\u5f8c\u534a\uff09\u5800\u5317\u9234\u97f3", "volume": "\u7b2c\u516b\u5377", "chunks": 39, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u516b\u5377 \u6b7b\u89d2", "volume": "\u7b2c\u516b\u5377", "chunks": 186, "nextEdges": 15, "prevEdges": 15, "edges": 30}, {"chapter": "\u7b2c\u516b\u5377 \u7279\u5178 \u58de\u5fc3\u773c\u7684\u642d\u6a94", "volume": "\u7b2c\u516b\u5377", "chunks": 45, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u516b\u5377 \u7279\u5178 \u5167\u5fc3\u7684\u75b2\u52de", "volume": "\u7b2c\u516b\u5377", "chunks": 53, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u516b\u5377 \u7279\u5178 \u65b0\u9ad4\u9a57", "volume": "\u7b2c\u516b\u5377", "chunks": 31, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u516b\u5377 \u7279\u5178 \u67d0\u500b\u590f\u65e5", "volume": "\u7b2c\u516b\u5377", "chunks": 39, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e5d\u5377 \u4e00\u4e4b\u7028\u5e06\u6ce2\u7684\u7368\u767d", "volume": "\u7b2c\u4e5d\u5377", "chunks": 64, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u4e5d\u5377 \u5b78\u751f\u6703\u9577\u7684\u610f\u5411", "volume": "\u7b2c\u4e5d\u5377", "chunks": 135, "nextEdges": 6, "prevEdges": 6, "edges": 12}, {"chapter": "\u7b2c\u4e5d\u5377 \u9010\u6f38\u6539\u8b8a\u7684\u95dc\u7cfb", "volume": "\u7b2c\u4e5d\u5377", "chunks": 186, "nextEdges": 14, "prevEdges": 14, "edges": 28}, {"chapter": "\u7b2c\u4e5d\u5377 \u4e0d\u6253\u7b97\u6539\u8b8a", "volume": "\u7b2c\u4e5d\u5377", "chunks": 155, "nextEdges": 12, "prevEdges": 12, "edges": 24}, {"chapter": "\u7b2c\u4e5d\u5377 \u4e00\u4e4b\u7028\u7684\u79d8\u5bc6\u3001\u795e\u5ba4\u7684\u79d8\u5bc6", "volume": "\u7b2c\u4e5d\u5377", "chunks": 173, "nextEdges": 10, "prevEdges": 10, "edges": 20}, {"chapter": "\u7b2c\u4e5d\u5377 \u8513\u5ef6\u958b\u4f86\u7684\u8b20\u8a00", "volume": "\u7b2c\u4e5d\u5377", "chunks": 159, "nextEdges": 6, "prevEdges": 6, "edges": 12}, {"chapter": "\u7b2c\u4e5d\u5377 \u66d6\u6627\u4e0d\u6e05\u7684\u4e8b\u60c5", "volume": "\u7b2c\u4e5d\u5377", "chunks": 392, "nextEdges": 34, "prevEdges": 34, "edges": 68}, {"chapter": "\u7b2c\u4e5d\u5377 \u6240\u6709\u7684\u7b56\u7565", "volume": "\u7b2c\u4e5d\u5377", "chunks": 147, "nextEdges": 13, "prevEdges": 13, "edges": 26}, {"chapter": "\u7b2c\u4e5d\u5377 \u56de\u6b78", "volume": "\u7b2c\u4e5d\u5377", "chunks": 81, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u4e5d\u5377 \u7279\u5178 \u5c0d\u5b78\u751f\u800c\u8a00\u7279\u5225\u7684\u4e00\u65e5", "volume": "\u7b2c\u4e5d\u5377", "chunks": 31, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e5d\u5377 \u7279\u5178 \u962a\u67f3\u7684\u4e8b\u5148\u51c6\u5099", "volume": "\u7b2c\u4e5d\u5377", "chunks": 583, "nextEdges": 140, "prevEdges": 140, "edges": 280}, {"chapter": "\u7b2c\u5341\u4e00\u5377 \u962a\u67f3\u6709\u68f2\u7684\u7368\u767d", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 47, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u5341\u4e00\u5377 \u6559\u5e2b\u5011\u7684\u6230\u6597", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 101, "nextEdges": 5, "prevEdges": 5, "edges": 10}, {"chapter": "\u7b2c\u5341\u4e00\u5377 \u4e00\u5e74\u7d1a\u7684\u6700\u5f8c\u4e00\u6230", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 138, "nextEdges": 11, "prevEdges": 11, "edges": 22}, {"chapter": "\u7b2c\u5341\u4e00\u5377 \u5c0d\u6230\u5c0d\u8c61", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 180, "nextEdges": 9, "prevEdges": 9, "edges": 18}, {"chapter": "\u7b2c\u5341\u4e00\u5377 \u73ed\u7d1a\u6b20\u7f3a\u7684\u6771\u897f", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 209, "nextEdges": 22, "prevEdges": 22, "edges": 44}, {"chapter": "\u7b2c\u5341\u4e00\u5377 \u9677\u9631\u3001\u89aa\u624b\u505a\u6599\u7406\u3001\u8acb\u6c42", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 320, "nextEdges": 29, "prevEdges": 29, "edges": 58}, {"chapter": "\u7b2c\u5341\u4e00\u5377 \u7537\u5152\u6dda", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 141, "nextEdges": 12, "prevEdges": 12, "edges": 24}, {"chapter": "\u7b2c\u5341\u4e00\u5377 \u7dbe\u5c0f\u8defVS\u962a\u67f3", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 268, "nextEdges": 17, "prevEdges": 17, "edges": 34}, {"chapter": "\u7b2c\u5341\u4e00\u5377 B\u73ed VS D\u73ed", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 165, "nextEdges": 11, "prevEdges": 11, "edges": 22}, {"chapter": "\u7b2c\u5341\u4e00\u5377 \u8d0f\u5bb6\u8207\u8f38\u5bb6\u7684\u754c\u7dda", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 205, "nextEdges": 19, "prevEdges": 19, "edges": 38}, {"chapter": "\u7b2c\u5341\u4e00\u5377 \u7279\u5178 \u7b2c\u4e00\u6b21\u7684\u8d08\u79ae", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 23, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u4e00\u5377 \u7279\u5178 \u771f\u6b63\u53ef\u6015\u7684\u4eba", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 38, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u4e00\u5377 \u7279\u5178 \u5fc3\u9858\u5b8c\u6210\u4e4b\u6642", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 756, "nextEdges": 186, "prevEdges": 186, "edges": 372}, {"chapter": "\u7b2c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 1 \u6697\u4e2d\u884c\u52d5", "volume": "\u7b2c\u5341\u4e8c\u5377", "chunks": 54, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 1 \u6240\u8b02\u7684\u5be6\u529b", "volume": "\u7b2c\u5341\u4e8c\u5377", "chunks": 60, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 1 \u65b0\u7684\u968e\u6bb5", "volume": "\u7b2c\u5341\u4e8c\u5377", "chunks": 264, "nextEdges": 22, "prevEdges": 22, "edges": 44}, {"chapter": "\u7b2c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 1 \u72e1\u8a50\u5b78\u751f\u9f4a\u805a\u7684\u4e00\u5e74\u7d1a", "volume": "\u7b2c\u5341\u4e8c\u5377", "chunks": 262, "nextEdges": 32, "prevEdges": 32, "edges": 64}, {"chapter": "\u7b2c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 1 \u4e00\u590f\u7684\u8003\u8a66", "volume": "\u7b2c\u5341\u4e8c\u5377", "chunks": 195, "nextEdges": 26, "prevEdges": 26, "edges": 52}, {"chapter": "\u7b2c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 1 D\u73ed\u8207D\u73ed", "volume": "\u7b2c\u5341\u4e8c\u5377", "chunks": 309, "nextEdges": 33, "prevEdges": 33, "edges": 66}, {"chapter": "\u7b2c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 1 \u9000\u5b78\u7684\u8173\u6b65\u8072", "volume": "\u7b2c\u5341\u4e8c\u5377", "chunks": 133, "nextEdges": 23, "prevEdges": 23, "edges": 46}, {"chapter": "\u7b2c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 1 \u52a0\u6df1\u7684\u8b0e\u5718", "volume": "\u7b2c\u5341\u4e8c\u5377", "chunks": 157, "nextEdges": 5, "prevEdges": 5, "edges": 10}, {"chapter": "\u7b2c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 1 \u4e03\u7028\u7ffc\u7279\u5178 \u3007\u6620\u5165\u4e03\u7028\u773c\u4e2d\u7684", "volume": "\u7b2c\u5341\u4e8c\u5377", "chunks": 68, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 1 \u60e0\u7279\u5178 \u3007\u5169\u4eba\u7368\u8655\u7684\u6642\u9593", "volume": "\u7b2c\u5341\u4e8c\u5377", "chunks": 45, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 1 \u9f8d\u5712\u756b\u518a\u77ed\u7bc7 \u3007\u4e00\u5e74\u5f8c\u624d\u767c\u73fe\u7684\u6771\u897f", "volume": "\u7b2c\u5341\u4e8c\u5377", "chunks": 155, "nextEdges": 7, "prevEdges": 7, "edges": 14}, {"chapter": "\u7b2c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 2 White Room\u5b78\u751f\u7684\u7368\u767d", "volume": "\u7b2c\u5341\u4e09\u5377", "chunks": 22, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 2 \u9010\u6f38\u6539\u8b8a\u7684\u6821\u5712\u751f\u6d3b", "volume": "\u7b2c\u5341\u4e09\u5377", "chunks": 304, "nextEdges": 24, "prevEdges": 24, "edges": 48}, {"chapter": "\u7b2c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 2 \u6d41\u901d\u7684\u6642\u5149", "volume": "\u7b2c\u5341\u4e09\u5377", "chunks": 177, "nextEdges": 19, "prevEdges": 19, "edges": 38}, {"chapter": "\u7b2c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 2 \u63a5\u8fd1\u7684\u590f\u5929\uff0c\u6fc0\u6230\u7684\u9810\u611f", "volume": "\u7b2c\u5341\u4e09\u5377", "chunks": 406, "nextEdges": 49, "prevEdges": 49, "edges": 98}, {"chapter": "\u7b2c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 2 \u4e00\u5e74\u7d1a\u3001\u4e09\u5e74\u7d1a\u5011\u7684\u6230\u6597", "volume": "\u7b2c\u5341\u4e09\u5377", "chunks": 199, "nextEdges": 31, "prevEdges": 31, "edges": 62}, {"chapter": "\u7b2c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 2 \u52f8\u8a98", "volume": "\u7b2c\u5341\u4e09\u5377", "chunks": 153, "nextEdges": 13, "prevEdges": 13, "edges": 26}, {"chapter": "\u7b2c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 2 \u66b4\u98a8\u96e8\u524d\u7684\u5be7\u975c", "volume": "\u7b2c\u5341\u4e09\u5377", "chunks": 123, "nextEdges": 5, "prevEdges": 5, "edges": 10}, {"chapter": "\u7b2c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 2 \u7279\u5178 \u25cb\u7ad9\u5728\u8eab\u65c1\u7684\u4ed6", "volume": "\u7b2c\u5341\u4e09\u5377", "chunks": 75, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 2 \u7279\u5178 \u25cb\u5929\u6fa4\u4e00\u590f\u773c\u88e1\u6240\u6620\u51fa\u7684\u4e8b\u7269", "volume": "\u7b2c\u5341\u4e09\u5377", "chunks": 52, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u56db\u5377 \u4e8c\u5e74\u7d1a\u7bc7 3 \u5404\u4e0d\u76f8\u540c\u7684\u6230\u7565", "volume": "\u7b2c\u5341\u56db\u5377", "chunks": 190, "nextEdges": 16, "prevEdges": 16, "edges": 32}, {"chapter": "\u7b2c\u5341\u56db\u5377 \u4e8c\u5e74\u7d1a\u7bc7 3 \u7121\u4eba\u5cf6\u8003\u8a66\u958b\u5e55", "volume": "\u7b2c\u5341\u56db\u5377", "chunks": 208, "nextEdges": 14, "prevEdges": 14, "edges": 28}, {"chapter": "\u7b2c\u5341\u56db\u5377 \u4e8c\u5e74\u7d1a\u7bc7 3 \u540c\u884c\u8005", "volume": "\u7b2c\u5341\u56db\u5377", "chunks": 124, "nextEdges": 16, "prevEdges": 16, "edges": 32}, {"chapter": "\u7b2c\u5341\u56db\u5377 \u4e8c\u5e74\u7d1a\u7bc7 3 \u559c\u6b61\u4e0a\u5c0d\u65b9\u9019\u4ef6\u4e8b", "volume": "\u7b2c\u5341\u56db\u5377", "chunks": 225, "nextEdges": 21, "prevEdges": 21, "edges": 42}, {"chapter": "\u7b2c\u5341\u56db\u5377 \u4e8c\u5e74\u7d1a\u7bc7 3 \u770b\u4e0d\u898b\u7684\u6575\u4eba", "volume": "\u7b2c\u5341\u56db\u5377", "chunks": 179, "nextEdges": 18, "prevEdges": 18, "edges": 36}, {"chapter": "\u7b2c\u5341\u56db\u5377 \u4e8c\u5e74\u7d1a\u7bc7 3 \u4e8c\u5e74D\u73ed\u7684\u5b64\u9ad8\u5929\u624d", "volume": "\u7b2c\u5341\u56db\u5377", "chunks": 272, "nextEdges": 18, "prevEdges": 18, "edges": 36}, {"chapter": "\u7b2c\u5341\u56db\u5377 \u4e8c\u5e74\u7d1a\u7bc7 3 \u958b\u59cb\u52d5\u4f5c\u7684\u4e00\u5e74\u7d1a\u751f\u5011", "volume": "\u7b2c\u5341\u56db\u5377", "chunks": 107, "nextEdges": 5, "prevEdges": 5, "edges": 10}, {"chapter": "\u7b2c\u5341\u56db\u5377 \u4e8c\u5e74\u7d1a\u7bc7 3 \u88ab\u63ed\u7a7f\u7684\u771f\u9762\u76ee", "volume": "\u7b2c\u5341\u56db\u5377", "chunks": 162, "nextEdges": 23, "prevEdges": 23, "edges": 46}, {"chapter": "\u7b2c\u5341\u56db\u5377 \u4e8c\u5e74\u7d1a\u7bc7 3 \u4e0d\u5e73\u7a69\u7684\u96b1\u6182", "volume": "\u7b2c\u5341\u56db\u5377", "chunks": 135, "nextEdges": 9, "prevEdges": 9, "edges": 18}, {"chapter": "\u7b2c\u5341\u56db\u5377 \u4e8c\u5e74\u7d1a\u7bc7 3 \u7279\u5178 \u25cb\u5f9e\u4ed6\u7684\u80cc\u5f71\u4e2d\u7aba\u898b\u7684\u4e8b\u7269", "volume": "\u7b2c\u5341\u56db\u5377", "chunks": 29, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u56db\u5377 \u4e8c\u5e74\u7d1a\u7bc7 3 \u7279\u5178 \u25cb\u77ed\u66ab\u7684\u5feb\u6a02\u6642\u9593", "volume": "\u7b2c\u5341\u56db\u5377", "chunks": 56, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u56db\u5377 \u4e8c\u5e74\u7d1a\u7bc7 3 \u7279\u5178 \u25cb\u4e0d\u53ef\u4f30\u91cf\u7684\u4e8b\u7269", "volume": "\u7b2c\u5341\u56db\u5377", "chunks": 53, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u4e94\u5377 \u4e8c\u5e74\u7d1a\u7bc7 4 \u6697\u4e2d\u6d3b\u8e8d", "volume": "\u7b2c\u5341\u4e94\u5377", "chunks": 136, "nextEdges": 22, "prevEdges": 22, "edges": 44}, {"chapter": "\u7b2c\u5341\u4e94\u5377 \u4e8c\u5e74\u7d1a\u7bc7 4 \u4e00\u76f4\u9ed8\u9ed8\u5730\u884c\u52d5", "volume": "\u7b2c\u5341\u4e94\u5377", "chunks": 88, "nextEdges": 4, "prevEdges": 4, "edges": 8}, {"chapter": "\u7b2c\u5341\u4e94\u5377 \u4e8c\u5e74\u7d1a\u7bc7 4 \u8207\u5b64\u7368\u7684\u6230\u6597", "volume": "\u7b2c\u5341\u4e94\u5377", "chunks": 136, "nextEdges": 16, "prevEdges": 16, "edges": 32}, {"chapter": "\u7b2c\u5341\u4e94\u5377 \u4e8c\u5e74\u7d1a\u7bc7 4 \u5305\u570d\u7db2\u3002\u9ad8\u5713\u5bfaVS\u81ea\u7531\u7d44", "volume": "\u7b2c\u5341\u4e94\u5377", "chunks": 190, "nextEdges": 20, "prevEdges": 20, "edges": 40}, {"chapter": "\u7b2c\u5341\u4e94\u5377 \u4e8c\u5e74\u7d1a\u7bc7 4 \u5404\u81ea\u7684\u60f3\u6cd5", "volume": "\u7b2c\u5341\u4e94\u5377", "chunks": 188, "nextEdges": 36, "prevEdges": 36, "edges": 72}, {"chapter": "\u7b2c\u5341\u4e94\u5377 \u4e8c\u5e74\u7d1a\u7bc7 4 \u540d\u70ba\u6708\u57ce\u7684\u7537\u4eba", "volume": "\u7b2c\u5341\u4e94\u5377", "chunks": 244, "nextEdges": 42, "prevEdges": 42, "edges": 84}, {"chapter": "\u7b2c\u5341\u4e94\u5377 \u4e8c\u5e74\u7d1a\u7bc7 4 \u516c\u4f48\u7d50\u679c", "volume": "\u7b2c\u5341\u4e94\u5377", "chunks": 137, "nextEdges": 4, "prevEdges": 4, "edges": 8}, {"chapter": "\u7b2c\u5341\u4e94\u5377 \u4e8c\u5e74\u7d1a\u7bc7 4 \u7279\u5178 \u6a21\u64ec\u7d04\u6703", "volume": "\u7b2c\u5341\u4e94\u5377", "chunks": 46, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u5341\u4e94\u5377 \u4e8c\u5e74\u7d1a\u7bc7 4 \u7279\u5178 \u64b2\u514b\u81c9", "volume": "\u7b2c\u5341\u4e94\u5377", "chunks": 53, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u4e94\u5377 \u4e8c\u5e74\u7d1a\u7bc7 4 \u7279\u5178 \u5728\u508d\u665a\u7684\u5929\u7a7a\u4e0b", "volume": "\u7b2c\u5341\u4e94\u5377", "chunks": 40, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u4e94\u5377 \u4e8c\u5e74\u7d1a\u7bc7 4 \u7279\u5178 \u5fc5\u9808\u50b3\u9054\u7684\u4e8b\u60c5", "volume": "\u7b2c\u5341\u4e94\u5377", "chunks": 820, "nextEdges": 157, "prevEdges": 157, "edges": 314}, {"chapter": "\u7b2c\u5341\u516d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 5 \u98a8\u6ce2\u7684\u8173\u6b65\u8072", "volume": "\u7b2c\u5341\u516d\u5377", "chunks": 168, "nextEdges": 13, "prevEdges": 13, "edges": 26}, {"chapter": "\u7b2c\u5341\u516d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 5 \u5169\u540d\u6559\u5e2b\uff0c\u547d\u904b\u7684\u7279\u5225\u8003\u8a66", "volume": "\u7b2c\u5341\u516d\u5377", "chunks": 235, "nextEdges": 28, "prevEdges": 28, "edges": 56}, {"chapter": "\u7b2c\u5341\u516d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 5 \u70cf\u4e91", "volume": "\u7b2c\u5341\u516d\u5377", "chunks": 297, "nextEdges": 36, "prevEdges": 36, "edges": 72}, {"chapter": "\u7b2c\u5341\u516d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 5 \u4e00\u4e4b\u7028\u5e06\u6ce2\u7684\u9078\u64c7", "volume": "\u7b2c\u5341\u516d\u5377", "chunks": 206, "nextEdges": 8, "prevEdges": 8, "edges": 16}, {"chapter": "\u7b2c\u5341\u516d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 5 \u9f8d\u5712\u7fd4\u7684\u9078\u64c7", "volume": "\u7b2c\u5341\u516d\u5377", "chunks": 176, "nextEdges": 19, "prevEdges": 19, "edges": 38}, {"chapter": "\u7b2c\u5341\u516d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 5 \u962a\u67f3\u6709\u68f2\u7684\u9078\u64c7", "volume": "\u7b2c\u5341\u516d\u5377", "chunks": 68, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u516d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 5 \u5800\u5317\u9234\u97f3\u7684\u9078\u64c7", "volume": "\u7b2c\u5341\u516d\u5377", "chunks": 302, "nextEdges": 43, "prevEdges": 43, "edges": 86}, {"chapter": "\u7b2c\u5341\u516d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 5 \u8207\u904e\u53bb\u7684\u8a23\u5225", "volume": "\u7b2c\u5341\u516d\u5377", "chunks": 77, "nextEdges": 7, "prevEdges": 7, "edges": 14}, {"chapter": "\u7b2c\u5341\u516d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 5 \u7279\u5178 \u95b1\u8b80\u6c23\u6c1b / \u5bdf\u8a00\u89c0\u8272", "volume": "\u7b2c\u5341\u516d\u5377", "chunks": 49, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u516d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 5 \u7279\u5178 \u5411\u524d\u770b", "volume": "\u7b2c\u5341\u516d\u5377", "chunks": 46, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u516d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 5 \u7279\u5178 \u7b49\u5f85\u7684\u6642\u9593", "volume": "\u7b2c\u5341\u516d\u5377", "chunks": 89, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u4e03\u5377 \u4e8c\u5e74\u7d1a\u7bc7 6 \u4e09\u5b85\u660e\u4eba\u7684\u7368\u767d", "volume": "\u7b2c\u5341\u4e03\u5377", "chunks": 61, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u4e03\u5377 \u4e8c\u5e74\u7d1a\u7bc7 6 \u52dd\u5229\u7684\u4ee3\u50f9", "volume": "\u7b2c\u5341\u4e03\u5377", "chunks": 259, "nextEdges": 26, "prevEdges": 26, "edges": 52}, {"chapter": "\u7b2c\u5341\u4e03\u5377 \u4e8c\u5e74\u7d1a\u7bc7 6 \u7121\u6cd5\u907f\u514d\u7684\u5fc5\u7d93\u4e4b\u8def", "volume": "\u7b2c\u5341\u4e03\u5377", "chunks": 193, "nextEdges": 18, "prevEdges": 18, "edges": 36}, {"chapter": "\u7b2c\u5341\u4e03\u5377 \u4e8c\u5e74\u7d1a\u7bc7 6 \u76e1\u7ba1\u5982\u6b64\u4e5f\u53ea\u80fd\u53bb\u505a", "volume": "\u7b2c\u5341\u4e03\u5377", "chunks": 259, "nextEdges": 46, "prevEdges": 46, "edges": 92}, {"chapter": "\u7b2c\u5341\u4e03\u5377 \u4e8c\u5e74\u7d1a\u7bc7 6 \u5354\u5b9a", "volume": "\u7b2c\u5341\u4e03\u5377", "chunks": 203, "nextEdges": 22, "prevEdges": 22, "edges": 44}, {"chapter": "\u7b2c\u5341\u4e03\u5377 \u4e8c\u5e74\u7d1a\u7bc7 6 \u7b2c\u4e8c\u6b21\u9ad4\u80b2\u796d", "volume": "\u7b2c\u5341\u4e03\u5377", "chunks": 226, "nextEdges": 28, "prevEdges": 28, "edges": 56}, {"chapter": "\u7b2c\u5341\u4e03\u5377 \u4e8c\u5e74\u7d1a\u7bc7 6 \u5ba2\u4eba", "volume": "\u7b2c\u5341\u4e03\u5377", "chunks": 131, "nextEdges": 11, "prevEdges": 11, "edges": 22}, {"chapter": "\u7b2c\u5341\u516b\u5377 \u4e8c\u5e74\u7d1a\u7bc7 7 \u25cb\u70ba\u6587\u5316\u796d\u505a\u51c6\u5099", "volume": "\u7b2c\u5341\u516b\u5377", "chunks": 353, "nextEdges": 38, "prevEdges": 38, "edges": 76}, {"chapter": "\u7b2c\u5341\u516b\u5377 \u4e8c\u5e74\u7d1a\u7bc7 7 \u25cb\u53cd\u53db\u7684\u72fc\u7159", "volume": "\u7b2c\u5341\u516b\u5377", "chunks": 142, "nextEdges": 13, "prevEdges": 13, "edges": 26}, {"chapter": "\u7b2c\u5341\u516b\u5377 \u4e8c\u5e74\u7d1a\u7bc7 7 \u25cb\u4e00\u5c01\u60c5\u66f8", "volume": "\u7b2c\u5341\u516b\u5377", "chunks": 121, "nextEdges": 9, "prevEdges": 9, "edges": 18}, {"chapter": "\u7b2c\u5341\u516b\u5377 \u4e8c\u5e74\u7d1a\u7bc7 7 \u25cb\u6587\u5316\u796d\u524d\u4e00\u5929\u7684\u8a0e\u8ad6\u6703", "volume": "\u7b2c\u5341\u516b\u5377", "chunks": 232, "nextEdges": 18, "prevEdges": 18, "edges": 36}, {"chapter": "\u7b2c\u5341\u516b\u5377 \u4e8c\u5e74\u7d1a\u7bc7 7 \u25cb\u6587\u5316\u796d\u7576\u5929", "volume": "\u7b2c\u5341\u516b\u5377", "chunks": 212, "nextEdges": 17, "prevEdges": 17, "edges": 34}, {"chapter": "\u7b2c\u5341\u516b\u5377 \u4e8c\u5e74\u7d1a\u7bc7 7 \u25cb\u611b\u88e1\u7559\u4e0b\u7684\u4e8b\u7269", "volume": "\u7b2c\u5341\u516b\u5377", "chunks": 174, "nextEdges": 22, "prevEdges": 22, "edges": 44}, {"chapter": "\u7b2c\u5341\u516b\u5377 \u4e8c\u5e74\u7d1a\u7bc7 7 \u25cb\u770b\u4e0d\u898b\u7684\u767b\u5834\u4eba\u7269", "volume": "\u7b2c\u5341\u516b\u5377", "chunks": 161, "nextEdges": 16, "prevEdges": 16, "edges": 32}, {"chapter": "\u7b2c\u5341\u516b\u5377 \u4e8c\u5e74\u7d1a\u7bc7 7 \u25cb\u5728\u5e55\u5f8c\u6697\u4e2d\u6d3b\u8e8d\u7684\u4eba\u5011", "volume": "\u7b2c\u5341\u516b\u5377", "chunks": 285, "nextEdges": 13, "prevEdges": 13, "edges": 26}, {"chapter": "\u7b2c\u5341\u516b\u5377 \u4e8c\u5e74\u7d1a\u7bc7 7 \u8f15\u4e95\u6fa4\u60e0\u7279\u5178 \u821e\u53f0\u4e4b\u4e0b", "volume": "\u7b2c\u5341\u516b\u5377", "chunks": 45, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u5341\u4e5d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 8 \u795e\u5d0e\u9686\u4e8c\u7684\u7368\u767d", "volume": "\u7b2c\u5341\u4e5d\u5377", "chunks": 55, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u5341\u4e5d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 8 \u77e5\u5df1\u77e5\u5f7c\uff0c\u767e\u6230\u767e\u52dd", "volume": "\u7b2c\u5341\u4e5d\u5377", "chunks": 262, "nextEdges": 30, "prevEdges": 30, "edges": 60}, {"chapter": "\u7b2c\u5341\u4e5d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 8 \u540d\u526f\u5176\u5be6\u7684\u6559\u80b2\u65c5\u884c", "volume": "\u7b2c\u5341\u4e5d\u5377", "chunks": 314, "nextEdges": 34, "prevEdges": 34, "edges": 68}, {"chapter": "\u7b2c\u5341\u4e5d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 8 \u6559\u80b2\u65c5\u884c\u7b2c\u4e8c\u5929", "volume": "\u7b2c\u5341\u4e5d\u5377", "chunks": 222, "nextEdges": 27, "prevEdges": 27, "edges": 54}, {"chapter": "\u7b2c\u5341\u4e5d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 8 \u6559\u80b2\u65c5\u884c\u7b2c\u4e09\u5929", "volume": "\u7b2c\u5341\u4e5d\u5377", "chunks": 170, "nextEdges": 24, "prevEdges": 24, "edges": 48}, {"chapter": "\u7b2c\u5341\u4e5d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 8 \u6559\u80b2\u65c5\u884c\u7b2c\u56db\u5929", "volume": "\u7b2c\u5341\u4e5d\u5377", "chunks": 289, "nextEdges": 17, "prevEdges": 17, "edges": 34}, {"chapter": "\u7b2c\u5341\u4e5d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 8 \u5728\u9ed1\u6697\u524d\u65b9\u4eae\u8d77\u7684\u5149\u8292", "volume": "\u7b2c\u5341\u4e5d\u5377", "chunks": 111, "nextEdges": 6, "prevEdges": 6, "edges": 12}, {"chapter": "\u7b2c\u5341\u4e5d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 8 \u7279\u5178 \u7d55\u5c0d\u662f\u9b3c\u8ff7\u5fc3\u7ac5", "volume": "\u7b2c\u5341\u4e5d\u5377", "chunks": 41, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u5341\u4e5d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 8 8.25 \u4f50\u85e4\u7279\u5178 \u8868\u821e\u53f0\u7684\u89d2\u843d", "volume": "\u7b2c\u5341\u4e5d\u5377", "chunks": 62, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u96f6\u5377 \u3007\u7dbe\u5c0f\u8def\u7be4\u81e3\u7684\u7368\u767d", "volume": "\u7b2c\u96f6\u5377", "chunks": 20, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u96f6\u5377 \u3007\u9805\u76ee\u555f\u52d5", "volume": "\u7b2c\u96f6\u5377", "chunks": 59, "nextEdges": 13, "prevEdges": 13, "edges": 26}, {"chapter": "\u7b2c\u96f6\u5377 \u3007\u5954\u8d70", "volume": "\u7b2c\u96f6\u5377", "chunks": 100, "nextEdges": 30, "prevEdges": 30, "edges": 60}, {"chapter": "\u7b2c\u96f6\u5377 \u3007\u555f\u52d5", "volume": "\u7b2c\u96f6\u5377", "chunks": 83, "nextEdges": 11, "prevEdges": 11, "edges": 22}, {"chapter": "\u7b2c\u96f6\u5377 \u3007\u672a\u66fe\u6709\u904e\u7684\u5be6\u9a57\u8a2d\u65bd", "volume": "\u7b2c\u96f6\u5377", "chunks": 80, "nextEdges": 8, "prevEdges": 8, "edges": 16}, {"chapter": "\u7b2c\u96f6\u5377 \u3007\u7d14\u6f54\u7121\u6687\u5b69\u5b50\u5011\u7684\u6545\u4e8b", "volume": "\u7b2c\u96f6\u5377", "chunks": 17, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e94\u56de\u7684\u6642\u5019\uff0c\u6559\u5b98\u5c07\u96d9\u624b\u653e\u80cc\u5f8c\uff0c\u5c07\u7cd6\u679c\u85cf\u597d\u5f8c\u518d\u628a\u96d9\u624b\u63e1\u62f3\u4f38\u51fa\u3002", "volume": "\u672a\u5206\u5377", "chunks": 91, "nextEdges": 30, "prevEdges": 30, "edges": 60}, {"chapter": "\u7b2c\u96f6\u5377 \u3007\u7d55\u671b\u8207\u6d3b\u8def", "volume": "\u7b2c\u96f6\u5377", "chunks": 129, "nextEdges": 23, "prevEdges": 23, "edges": 46}, {"chapter": "\u7b2c\u96f6\u5377 \u3007\u5c55\u671b\u672a\u4f86", "volume": "\u7b2c\u96f6\u5377", "chunks": 96, "nextEdges": 10, "prevEdges": 10, "edges": 20}, {"chapter": "\u7b2c\u96f6\u5377 \u63d2\u5716", "volume": "\u7b2c\u96f6\u5377", "chunks": 970, "nextEdges": 305, "prevEdges": 305, "edges": 610}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 \u4e8c\u5e74\u7d1a\u7b2c\u4e09\u5b78\u671f\u958b\u5e55", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 135, "nextEdges": 16, "prevEdges": 16, "edges": 32}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 \u751f\u5b58\u8207\u6dd8\u6c70\u7684\u7279\u5225\u8003\u8a66", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 204, "nextEdges": 19, "prevEdges": 19, "edges": 38}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 \u6170\u52de\u8005\u7684\u771f\u9762\u76ee", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 101, "nextEdges": 16, "prevEdges": 16, "edges": 32}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 \u5efa\u8b70", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 168, "nextEdges": 17, "prevEdges": 17, "edges": 34}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 \u6539\u8b8a\u5f62\u52e2\u7684\u4eba", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 183, "nextEdges": 17, "prevEdges": 17, "edges": 34}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 \u653b\u9632\u7684\u56db\u89d2\u5f62", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 292, "nextEdges": 21, "prevEdges": 21, "edges": 42}, {"chapter": "\u7b2c\u56db\u56de\u5408\uff0c\u962a\u67f3\u9996\u5148\u5ba3\u544a\u8981\u7b2c\u4e09\u6b21\u6307\u540d\u9ad8\u5713\u5bfa\uff0c\u53c8\u518d\u6b21\u9707\u9a5a\u773e\u4eba\u3002", "volume": "\u672a\u5206\u5377", "chunks": 122, "nextEdges": 8, "prevEdges": 8, "edges": 16}, {"chapter": "\u7b2c\u5341\u4e00\u56de\u5408\u6700\u521d\u7684\u5800\u5317\u5411\u962a\u67f3\u73ed\u767c\u52d5\u7684\u653b\u64ca\u3002", "volume": "\u672a\u5206\u5377", "chunks": 131, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u5341\u4e09\u56de\u5408\uff0c\u4e00\u4e4b\u7028\u7684\u653b\u64ca\u3002\u4f86\u5230\u4e86\u7b2c\u4e09\u6b21\u7684\u9632\u79a6\u56de\u5408\uff0c\u5800\u5317\u9078\u64c7\u4e86\u4fdd\u8b77\u8f15\u4e95\u6fa4\u3002\u9677\u5165\u6dd8\u6c70\u908a\u7de3\u7684\u6211\u4f3c\u4e4e\u7121\u6cd5\u7372\u5f97\u4fdd\u8b77\uff0c\u88ab\u68c4\u4e4b\u4e0d\u9867\u4e86\u3002", "volume": "\u672a\u5206\u5377", "chunks": 160, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u5341\u4e09\u56de\u5408\u3001\u7b2c\u5341\u56db\u56de\u5408\u4e5f\u4e00\u6a23\u3002", "volume": "\u672a\u5206\u5377", "chunks": 65, "nextEdges": 3, "prevEdges": 3, "edges": 6}, {"chapter": "\u7b2c\u5341\u4e00\u56de\u5408\uff0c\u962a\u67f3\u6307\u540d\u7684\u4e94\u500b\u4eba\u90fd\u88ab\u4fdd\u8b77\u5236\u5ea6\u64cb\u4f4f\u4e86\u3002", "volume": "\u672a\u5206\u5377", "chunks": 73, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u4e8c\u5341\u56de\u5408\u5c31\u9019\u6a23\u5728\u52a3\u52e2\u4e2d\u7d50\u675f\uff0c\u6210\u4e86\u8207\u7b2c\u4e09\u540d\u76f8\u5dee\u516d\u5206\u7684\u6557\u6230\u3002", "volume": "\u672a\u5206\u5377", "chunks": 217, "nextEdges": 13, "prevEdges": 13, "edges": 26}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 \u89ba\u9192\u7684\u524d\u5146", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 87, "nextEdges": 6, "prevEdges": 6, "edges": 12}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 \u7279\u5178 \u7121\u610f\u8b58\u7684\u89ba\u9192", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 22, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 \u7279\u5178 \u6210\u4eba\u7684\u7279\u5225\u6388\u8ab2", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 44, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 10.25\u7279\u5178 \u5f9e\u90a3\u6642\u958b\u59cb", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 71, "nextEdges": 4, "prevEdges": 4, "edges": 8}, {"chapter": "\u7b2c\u4e8c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 11 \u6642\u96b1\u6642\u898b\u7684\u96d9\u65b9\u9762\u8ac7", "volume": "\u7b2c\u4e8c\u5341\u4e8c\u5377", "chunks": 142, "nextEdges": 17, "prevEdges": 17, "edges": 34}, {"chapter": "\u7b2c\u4e8c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 11 \u4ea4\u6d41\u5408\u5bbf", "volume": "\u7b2c\u4e8c\u5341\u4e8c\u5377", "chunks": 317, "nextEdges": 36, "prevEdges": 36, "edges": 72}, {"chapter": "\u7b2c\u4e8c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 11 \u5800\u5317\u63d0\u51fa\u7684\u8acb\u6c42\u8207\u7dbe\u5c0f\u8def\u63d0\u51fa\u7684\u8acb\u6c42", "volume": "\u7b2c\u4e8c\u5341\u4e8c\u5377", "chunks": 159, "nextEdges": 11, "prevEdges": 11, "edges": 22}, {"chapter": "\u7b2c\u4e8c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 11 \u5947\u5999\u7684\u7a81\u5140\u611f", "volume": "\u7b2c\u4e8c\u5341\u4e8c\u5377", "chunks": 103, "nextEdges": 10, "prevEdges": 10, "edges": 20}, {"chapter": "\u7b2c\u4e8c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 11 \u76e3\u8996\u8005\u8207\u88ab\u76e3\u8996\u8005", "volume": "\u7b2c\u4e8c\u5341\u4e8c\u5377", "chunks": 256, "nextEdges": 21, "prevEdges": 21, "edges": 42}, {"chapter": "\u7b2c\u4e8c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 11 \u5e73\u975c\u7684\u4e86\u7d50", "volume": "\u7b2c\u4e8c\u5341\u4e8c\u5377", "chunks": 160, "nextEdges": 14, "prevEdges": 14, "edges": 28}, {"chapter": "\u7b2c\u4e8c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 11 \u591c\u6df1\u4eba\u975c\u7684\u591c\u665a", "volume": "\u7b2c\u4e8c\u5341\u4e8c\u5377", "chunks": 158, "nextEdges": 9, "prevEdges": 9, "edges": 18}, {"chapter": "\u7b2c\u4e8c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 11 \u5411\u524d\u9081\u9032\u7684\u52c7\u6c23", "volume": "\u7b2c\u4e8c\u5341\u4e8c\u5377", "chunks": 109, "nextEdges": 7, "prevEdges": 7, "edges": 14}, {"chapter": "\u7b2c\u4e8c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 11 \u6311\u6230\u8005\u662f\u8ab0", "volume": "\u7b2c\u4e8c\u5341\u4e8c\u5377", "chunks": 144, "nextEdges": 10, "prevEdges": 10, "edges": 20}, {"chapter": "\u7b2c\u4e8c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 11 \u8336\u67f1\u4f50\u679d\u7279\u5178 \u773c\u524d\u7684\u5b78\u751f", "volume": "\u7b2c\u4e8c\u5341\u4e8c\u5377", "chunks": 43, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u7368\u7279\u7684\u5b78\u5e74\u672b\u7279\u5225\u8003\u8a66", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 103, "nextEdges": 10, "prevEdges": 10, "edges": 20}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u61c9\u8a72\u5148\u4e86\u7d50\u7684\u4e8b\u60c5", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 199, "nextEdges": 29, "prevEdges": 29, "edges": 58}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u5b78\u5e74\u672b\u7279\u5225\u8003\u8a66\u958b\u5e55", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 243, "nextEdges": 18, "prevEdges": 18, "edges": 36}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u5148\u92d2\u4e4b\u6230", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 135, "nextEdges": 4, "prevEdges": 4, "edges": 8}, {"chapter": "\u7b2c\u4e8c\u56de\u5408\u7d50\u675f\u5f8c\uff0c\u4ee3\u8868\u53ef\u4ee5\u518d\u6b21\u884c\u4f7f\u6307\u540d\u7684\u6b0a\u5229\u3002", "volume": "\u672a\u5206\u5377", "chunks": 48, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u56db\u56de\u5408\u958b\u59cb\u5f8c\uff0c\u7d93\u904e\u5927\u7d04\u5169\u5206\u9418\u6642\uff0c\u5e78\u6751\u7d42\u65bc\u5831\u4e0a\u81ea\u5df1\u7684\u8eab\u4efd\uff0c\u8aaa\u4ed6\u7684\u89d2\u8272\u662f\u7562\u696d\u751f\u3002", "volume": "\u672a\u5206\u5377", "chunks": 67, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u845b\u57ce\u7684\u53cd\u653b", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 148, "nextEdges": 9, "prevEdges": 9, "edges": 18}, {"chapter": "\u7b2c\u4e00\u56de\u5408\u7d50\u675f\u5f8c\u6c92\u591a\u4e45\uff0c\u76f8\u5c0d\u65bc\u9078\u64c7\u8df3\u904e\u7684\u845b\u57ce\uff0c\u9b3c\u982d\u6beb\u4e0d\u7336\u8c6b\u4e14\u5f37\u786c\u5730\u9032\u884c\u6307\u540d\u3002\u4ed6\u6c7a\u5b9a\u8ced\u4e00\u628a\uff0c\u5728\u6c92\u6709\u4efb\u4f55\u7dda\u7d22\u7684\u72c0\u614b\u4e0b\u6307\u540d\u6df7\u5728\u5341\u56db\u4eba\u88e1\u9762\u7684\u5169\u540d\u6a21\u7bc4\u751f\u3002", "volume": "\u672a\u5206\u5377", "chunks": 49, "nextEdges": 3, "prevEdges": 3, "edges": 6}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u61ca\u6094\u7684\u6dda\u6c34", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 184, "nextEdges": 21, "prevEdges": 21, "edges": 42}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u7dbe\u5c0f\u8def\u7684\u7b56\u7565", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 111, "nextEdges": 13, "prevEdges": 13, "edges": 26}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u6bb7\u5207\u671f\u76fc\u7684\u5c0d\u624b", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 147, "nextEdges": 5, "prevEdges": 5, "edges": 10}, {"chapter": "\u7b2c\u4e8c\u56de\u5408\u958b\u5e55\u5f8c\uff0c\u68ee\u4e0b\u53c8\u958b\u59cb\u8ffd\u7a76\u5176\u4ed6\u4eba\u7684\u8eab\u4efd\u3002\u5373\u4f7f\u9694\u8457\u87a2\u5e55\u4e26\u4e0d\u66c9\u5f97\u5979\u8abf\u67e5\u4e86\u8ab0\u7684\u771f\u5be6\u8eab\u4efd\uff0c\u4f46\u5979\u8868\u73fe\u51fa\u5728\u5c0b\u627e\u65b0\u89d2\u8272\u7684\u884c\u52d5\u3002", "volume": "\u672a\u5206\u5377", "chunks": 126, "nextEdges": 4, "prevEdges": 4, "edges": 8}, {"chapter": "\u7b2c\u4e8c\u56de\u5408\u518d\u6b21\u5f9e\u6e05\u6c34\u91dd\u5c0d\u6642\u4efb\u7684\u767c\u8a00\u63ed\u958b\u5e8f\u5e55\u3002", "volume": "\u672a\u5206\u5377", "chunks": 99, "nextEdges": 10, "prevEdges": 10, "edges": 20}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u5176\u5be6\u2500\u2500", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 62, "nextEdges": 8, "prevEdges": 8, "edges": 16}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u7279\u5178 \u7fd2\u4ee5\u70ba\u5e38\u7684\u65e5\u5e38", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 723, "nextEdges": 153, "prevEdges": 153, "edges": 306}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 &#11093;\u7d42\u7109\u7684\u65e5\u5e38", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 71, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 &#11093;\u6df7\u4e82", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 149, "nextEdges": 8, "prevEdges": 8, "edges": 16}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 &#11093;\u78ba\u8a8d", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 125, "nextEdges": 5, "prevEdges": 5, "edges": 10}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 &#11093;\u4e00\u5e74\u7684\u958b\u59cb", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 228, "nextEdges": 20, "prevEdges": 20, "edges": 40}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 &#11093;\u65c1\u89c0\u8005\u6e05", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 157, "nextEdges": 11, "prevEdges": 11, "edges": 22}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 &#11093;\u4ea4\u932f", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 254, "nextEdges": 25, "prevEdges": 25, "edges": 50}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 &#11093;C\u73ed\u7684\u6821\u5712\u751f\u6d3b", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 115, "nextEdges": 8, "prevEdges": 8, "edges": 16}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 &#11093;\u7dbe\u5c0f\u8def\u7684\u6557\u5317", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 301, "nextEdges": 20, "prevEdges": 20, "edges": 40}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 &#11093;\u6575\u4eba\u548c\u540c\u4f34", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 132, "nextEdges": 9, "prevEdges": 9, "edges": 18}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 &#11093;\u524d\u65b9\u7b49\u5f85\u4e4b\u7269", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 192, "nextEdges": 10, "prevEdges": 10, "edges": 20}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 \u767d\u77f3\u98db\u9ce5\u7279\u5178\u2460 \u5fc3\u4e2d\u7684\u79d8\u5bc6", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 34, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 \u9577\u8c37\u90e8\u6ce2\u7460\u52a0\u7279\u5178 \u5fc3\u9748\u7684\u652f\u67f1", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 59, "nextEdges": 2, "prevEdges": 2, "edges": 4}, {"chapter": "\u7b2c\u4e8c\u5341\u4e94\u5377 \u4e09\u5e74\u7d1a\u7bc7 2 &#11093;\u4e03\u7028\u7ffc\u7684\u7368\u767d", "volume": "\u7b2c\u4e8c\u5341\u4e94\u5377", "chunks": 54, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e8c\u5341\u4e94\u5377 \u4e09\u5e74\u7d1a\u7bc7 2 &#11093;\u719f\u7d61", "volume": "\u7b2c\u4e8c\u5341\u4e94\u5377", "chunks": 80, "nextEdges": 17, "prevEdges": 17, "edges": 34}, {"chapter": "\u7b2c\u4e8c\u5341\u4e94\u5377 \u4e09\u5e74\u7d1a\u7bc7 2 &#11093;\u5e73\u975c\u7684\u8003\u8a66", "volume": "\u7b2c\u4e8c\u5341\u4e94\u5377", "chunks": 143, "nextEdges": 13, "prevEdges": 13, "edges": 26}, {"chapter": "\u7b2c\u4e8c\u5341\u4e94\u5377 \u4e09\u5e74\u7d1a\u7bc7 2 &#11093;\u77ad\u89e3\u5c0d\u65b9", "volume": "\u7b2c\u4e8c\u5341\u4e94\u5377", "chunks": 229, "nextEdges": 34, "prevEdges": 34, "edges": 68}, {"chapter": "\u7b2c\u4e8c\u5341\u4e94\u5377 \u4e09\u5e74\u7d1a\u7bc7 2 &#11093;\u77e5\u8b58\u7684\u63a2\u6c42", "volume": "\u7b2c\u4e8c\u5341\u4e94\u5377", "chunks": 224, "nextEdges": 14, "prevEdges": 14, "edges": 28}, {"chapter": "\u7b2c\u4e8c\u5341\u4e94\u5377 \u4e09\u5e74\u7d1a\u7bc7 2 &#11093;\u5c71\u6751\u7684\u52c7\u6c23", "volume": "\u7b2c\u4e8c\u5341\u4e94\u5377", "chunks": 193, "nextEdges": 15, "prevEdges": 15, "edges": 30}, {"chapter": "\u7b2c\u4e8c\u5341\u4e94\u5377 \u4e09\u5e74\u7d1a\u7bc7 2 &#11093;\u798d\u516e\u798f\u6240\u501a\uff0c\u798f\u516e\u798d\u6240\u4f0f", "volume": "\u7b2c\u4e8c\u5341\u4e94\u5377", "chunks": 134, "nextEdges": 16, "prevEdges": 16, "edges": 32}, {"chapter": "\u7b2c\u4e8c\u5341\u4e94\u5377 \u4e09\u5e74\u7d1a\u7bc7 2 &#11093;\u89c0\u5bdf\u8005", "volume": "\u7b2c\u4e8c\u5341\u4e94\u5377", "chunks": 173, "nextEdges": 10, "prevEdges": 10, "edges": 20}, {"chapter": "\u7b2c\u4e8c\u5341\u4e94\u5377 \u4e09\u5e74\u7d1a\u7bc7 2 &#11093;\u53e6\u4e00\u500b\u65b0\u7684\u7bc7\u7ae0", "volume": "\u7b2c\u4e8c\u5341\u4e94\u5377", "chunks": 113, "nextEdges": 7, "prevEdges": 7, "edges": 14}, {"chapter": "\u7b2c\u4e8c\u5341\u516d\u5377 \u4e09\u5e74\u7d1a\u7bc7 3 &#11093;\u958b\u5e55\u2027\u751f\u5b58\u6e38\u6232\u7279\u5225\u8003\u8a66", "volume": "\u7b2c\u4e8c\u5341\u516d\u5377", "chunks": 140, "nextEdges": 20, "prevEdges": 20, "edges": 40}, {"chapter": "\u7b2c\u4e8c\u5341\u516d\u5377 \u4e09\u5e74\u7d1a\u7bc7 3 &#11093;\u5947\u8972", "volume": "\u7b2c\u4e8c\u5341\u516d\u5377", "chunks": 211, "nextEdges": 23, "prevEdges": 23, "edges": 46}, {"chapter": "\u7b2c\u4e8c\u5341\u516d\u5377 \u4e09\u5e74\u7d1a\u7bc7 3 &#11093;\u7121\u5f62\u7684\u58d3\u8feb\u611f", "volume": "\u7b2c\u4e8c\u5341\u516d\u5377", "chunks": 193, "nextEdges": 19, "prevEdges": 19, "edges": 38}, {"chapter": "\u7b2c\u4e8c\u5341\u516d\u5377 \u4e09\u5e74\u7d1a\u7bc7 3 \u25cb\u6a5f\u7de3\u5de7\u5408", "volume": "\u7b2c\u4e8c\u5341\u516d\u5377", "chunks": 152, "nextEdges": 16, "prevEdges": 16, "edges": 32}, {"chapter": "\u7b2c\u4e8c\u5341\u516d\u5377 \u4e09\u5e74\u7d1a\u7bc7 3 \u25cb\u540c\u76df", "volume": "\u7b2c\u4e8c\u5341\u516d\u5377", "chunks": 88, "nextEdges": 8, "prevEdges": 8, "edges": 16}, {"chapter": "\u7b2c\u4e8c\u5341\u516d\u5377 \u4e09\u5e74\u7d1a\u7bc7 3 \u25cb\u771f\u6b63\u7684\u76ee\u6a19", "volume": "\u7b2c\u4e8c\u5341\u516d\u5377", "chunks": 169, "nextEdges": 16, "prevEdges": 16, "edges": 32}, {"chapter": "\u7b2c\u4e8c\u5341\u516d\u5377 \u4e09\u5e74\u7d1a\u7bc7 3 \u25cb\u6c7a\u6230\u4e4b\u6642", "volume": "\u7b2c\u4e8c\u5341\u516d\u5377", "chunks": 165, "nextEdges": 18, "prevEdges": 18, "edges": 36}, {"chapter": "\u7b2c\u4e8c\u5341\u516d\u5377 \u4e09\u5e74\u7d1a\u7bc7 3 \u25cb\u8b93\u6211\u898b\u8b49", "volume": "\u7b2c\u4e8c\u5341\u516d\u5377", "chunks": 102, "nextEdges": 11, "prevEdges": 11, "edges": 22}, {"chapter": "\u7b2c\u4e8c\u5341\u516d\u5377 \u4e09\u5e74\u7d1a\u7bc7 3 \u767d\u77f3\u98db\u9ce5\u7279\u5178 \u7121\u8272\u900f\u660e", "volume": "\u7b2c\u4e8c\u5341\u516d\u5377", "chunks": 26, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e8c\u5341\u516d\u5377 \u4e09\u5e74\u7d1a\u7bc7 3 \u5800\u5317\u9234\u97f3\u7279\u5178 \u77db\u76fe\uff1f", "volume": "\u7b2c\u4e8c\u5341\u516d\u5377", "chunks": 41, "nextEdges": 1, "prevEdges": 1, "edges": 2}, {"chapter": "\u7b2c\u4e8c\u5341\u516d\u5377 \u4e09\u5e74\u7d1a\u7bc7 3 \u60c5\u4eba\u7bc0\u6d3b\u52d5\u7279\u5178", "volume": "\u7b2c\u4e8c\u5341\u516d\u5377", "chunks": 37, "nextEdges": 4, "prevEdges": 4, "edges": 8}, {"chapter": "\u7b2c\u5341\u516b\u5377 \u4e8c\u5e74\u7d1a\u7bc7 7 \u25cb\u9577\u8c37\u90e8\u6ce2\u7460\u52a0\u7684\u7368\u767d", "volume": "\u7b2c\u5341\u516b\u5377", "chunks": 68, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 \u4f0a\u5439\u6faa\u7279\u5178 \u64d4\u5fc3\uff1f", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 51, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u516b\u5377 \u7279\u5178 \u4e00\u5e74\u7d1a\u7684\u7537\u5b69\u5b50", "volume": "\u7b2c\u516b\u5377", "chunks": 12, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 1 \u4e03\u7028\u7ffc\u7279\u5178 \u3007\u5fc3\u8072", "volume": "\u7b2c\u5341\u4e8c\u5377", "chunks": 44, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u516d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 5 \u7279\u5178 \u4e0d\u5b89\u5b9a\u7684\u5fc3", "volume": "\u7b2c\u5341\u516d\u5377", "chunks": 33, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e5d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 8 \u7279\u5178 \u66f4\u8863\u5ba4\u4e2d", "volume": "\u7b2c\u5341\u4e5d\u5377", "chunks": 37, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e5d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 8 \u7279\u5178 \u8ff7\u832b\u8207\u89ba\u609f", "volume": "\u7b2c\u5341\u4e5d\u5377", "chunks": 44, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e09\u56de\u5408\uff0c\u5800\u5317\u73ed\u767c\u52d5\u653b\u64ca\u3002", "volume": "\u672a\u5206\u5377", "chunks": 30, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e03\u5377 \u5f8c\u8a18", "volume": "\u7b2c\u4e03\u5377", "chunks": 60, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e5d\u5377 \u7279\u5178 \u53ef\u4ee5\u4fe1\u4efb\u7684\u540c\u5b78\uff1f", "volume": "\u7b2c\u4e5d\u5377", "chunks": 51, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u516b\u5377 \u7279\u5178 \u5fc3\u4e2d\u4e4b\u610f", "volume": "\u7b2c\u516b\u5377", "chunks": 42, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e5d\u5377 \u7279\u5178 \u795e\u5ba4\u7bc7", "volume": "\u7b2c\u4e5d\u5377", "chunks": 37, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u56db\u5377 \u5f8c\u8a18", "volume": "\u7b2c\u56db\u5377", "chunks": 29, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e94\u5377 \u7279\u5178 \u600e\u6a23\u9078\u512a\u5f85\u8005", "volume": "\u7b2c\u4e94\u5377", "chunks": 138, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u56db\u5377 \u4e8c\u5e74\u7d1a\u7bc7 3 \u4e03\u7028\u7ffc\u7684\u7368\u767d", "volume": "\u7b2c\u5341\u56db\u5377", "chunks": 27, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e94\u5377 \u4e8c\u5e74\u7d1a\u7bc7 4 \u7279\u5178 \u6c92\u7406\u7531", "volume": "\u7b2c\u5341\u4e94\u5377", "chunks": 20, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 \u7279\u5178 \u51b0\u51b7\u7684\u9577\u6905\u4e4b\u4e0a", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 43, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 11 \u68ee\u4e0b\u85cd\u7279\u5178 \u8acb\u4ee3\u66ff\u6211\u50be\u807d", "volume": "\u7b2c\u4e8c\u5341\u4e8c\u5377", "chunks": 57, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 \u68ee\u4e0b\u85cd\u7279\u5178 \u52a0\u7279\u6797\u70ae", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 20, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e94\u5377 \u4e09\u5e74\u7d1a\u7bc7 2 \u68ee\u4e0b\u85cd\u7279\u5178 \u8033\u69cd", "volume": "\u7b2c\u4e8c\u5341\u4e94\u5377", "chunks": 32, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u56db\u5377 \u4e09\u5e74\u7d1a\u7bc7 1 \u767d\u77f3\u98db\u9ce5\u7279\u5178\u2461 \u53e6\u4e00\u96bb\u8033\u6735", "volume": "\u7b2c\u4e8c\u5341\u56db\u5377", "chunks": 79, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5377 \u7279\u5178 \u901a\u4fd7\u7684\u5984\u60f3", "volume": "\u7b2c\u4e8c\u5377", "chunks": 19, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u56db\u5377 \u4e8c\u5e74\u7d1a\u7bc7 3 \u7279\u5178 \u25cb\u66ab\u6642\u7684\u5225\u96e2", "volume": "\u7b2c\u5341\u56db\u5377", "chunks": 34, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e03\u5377 \u4e8c\u5e74\u7d1a\u7bc7 6 \u5f8c\u8a18", "volume": "\u7b2c\u5341\u4e03\u5377", "chunks": 23, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u516b\u5377 \u4e8c\u5e74\u7d1a\u7bc7 7 \u5f8c\u8a18", "volume": "\u7b2c\u5341\u516b\u5377", "chunks": 31, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u516b\u5377 \u4e8c\u5e74\u7d1a\u7bc7 7 \u6adb\u7530\u5c0f\u5929\u4f7f\u7279\u5178 \u751f\u5b58\u4e0b\u4f86\u7684\u65b9\u6cd5", "volume": "\u7b2c\u5341\u516b\u5377", "chunks": 19, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u516b\u5377 \u4e8c\u5e74\u7d1a\u7bc7 7 \u5800\u5317\u9234\u97f3\u7279\u5178 \u9192\u4f86\u5f8c\u6703\u5fd8\u8a18\u7684\u5922", "volume": "\u7b2c\u5341\u516b\u5377", "chunks": 91, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u516b\u5377 \u4e8c\u5e74\u7d1a\u7bc7 7 \u690e\u540d\u65e5\u548c\u7279\u5178 \u840c\u82bd\u7684\u611f\u60c5", "volume": "\u7b2c\u5341\u516b\u5377", "chunks": 60, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 \u6a4b\u672c\u6b63\u7fa9\u7684\u7368\u767d", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 54, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e94\u56de\u5408\u962a\u67f3\u73ed\u5c0d\u9f8d\u5712\u73ed\u5c55\u958b\u7684\u653b\u64ca\u3002\u9632\u79a6\u65b9\u7684\u7d50\u679c\u516c\u958b\u4e86\uff0c\u53ea\u898b\u9f8d\u5712\u73ed\u518d\u6b21\u6210\u529f\u5b8c\u7f8e\u901a\u95dc\u3002\u770b\u5230\u9019\u7d50\u679c\uff0c\u4e00\u4e4b\u7028\u6084\u6084\u9732\u51fa\u5fae\u7b11\uff0c\u6c92\u8b93\u5468\u570d\u7684\u4eba\u5bdf\u89ba\u3002", "volume": "\u672a\u5206\u5377", "chunks": 42, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u7279\u5178 \u81e8\u8fd1\u7684\u7d04\u5b9a", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 42, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u7279\u5178 \u771f\u5fc3", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 41, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e03\u5377 \u4e8c\u5e74\u7d1a\u7bc7 6 \u79cb\u5929\u7684\u4f86\u8a2a", "volume": "\u7b2c\u5341\u4e03\u5377", "chunks": 73, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e5d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 8 \u7279\u5178 \u5fae\u5f31\u7684\u8b8a\u5316", "volume": "\u7b2c\u5341\u4e5d\u5377", "chunks": 46, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u661f\u4e4b\u5bae\u77e5\u60e0\u7684\u7368\u767d", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 12, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e5d\u5377 \u5f8c\u8a18", "volume": "\u7b2c\u4e5d\u5377", "chunks": 21, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u516d\u56de\u5408\u5979\u4e5f\u4e00\u6a23\u5411\u4e3b\u8003\u5b98\u5831\u4e0a\u8f15\u4e95\u6fa4\u7684\u540d\u5b57\u3002", "volume": "\u672a\u5206\u5377", "chunks": 22, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e94\u5377 \u4e09\u5e74\u7d1a\u7bc7 2 \u4e00\u4e4b\u7028\u5e06\u6ce2\u7279\u5178 \u592a\u559c\u6b61\u4e86\u2026\u2026", "volume": "\u7b2c\u4e8c\u5341\u4e94\u5377", "chunks": 59, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e00\u5377 \u5f8c\u8a18", "volume": "\u7b2c\u4e00\u5377", "chunks": 6, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5377 \u5f8c\u8a18", "volume": "\u7b2c\u4e8c\u5377", "chunks": 25, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e09\u5377 \u5f8c\u8a18", "volume": "\u7b2c\u4e09\u5377", "chunks": 7, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 2 \u5f8c\u8a18", "volume": "\u7b2c\u5341\u4e09\u5377", "chunks": 7, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 \u7279\u5178 \u5fae\u5c0f\u7684\u706b\u7a2e", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 29, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 \u7279\u5178 \u6182\u6101\u7684\u60c5\u611f", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 35, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 11 \u690e\u540d\u65e5\u548c\u7279\u5178 \u4e0d\u60f3\u5fd8\u537b\u7684\u56de\u61b6", "volume": "\u7b2c\u4e8c\u5341\u4e8c\u5377", "chunks": 40, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e94\u5377 \u4e09\u5e74\u7d1a\u7bc7 2 \u767d\u77f3\u98db\u9ce5\u7279\u5178 \u96b1\u85cf\u5728\u5167\u5fc3\u7684\u8072\u97f3", "volume": "\u7b2c\u4e8c\u5341\u4e94\u5377", "chunks": 32, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e94\u5377 \u4e09\u5e74\u7d1a\u7bc7 2 \u690e\u540d\u65e5\u548c\u7279\u5178 \u6416\u66f3\u4e4b\u5fc3", "volume": "\u7b2c\u4e8c\u5341\u4e94\u5377", "chunks": 32, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u516d\u5377 \u4e09\u5e74\u7d1a\u7bc7 3 \u690e\u540d\u65e5\u548c\u7279\u5178 \u9003\u907f", "volume": "\u7b2c\u4e8c\u5341\u516d\u5377", "chunks": 25, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 2 \u7279\u5178 \u25cb\u85c9\u53e3", "volume": "\u7b2c\u5341\u4e09\u5377", "chunks": 73, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e00\u5377 \u4e8c\u5e74\u7d1a\u7bc7 10 \u65b0\u7684\u9000\u5b78\u8005", "volume": "\u7b2c\u4e8c\u5341\u4e00\u5377", "chunks": 74, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e03\u5377 \u9f8d\u5712\u7fd4\u7684\u7368\u767d", "volume": "\u7b2c\u4e03\u5377", "chunks": 14, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e09\u5377 \u8336\u67f1\u4f50\u679d\u7684\u7368\u767d", "volume": "\u7b2c\u4e09\u5377", "chunks": 2, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u56de\u5408\u3002\u4e00\u4e4b\u7028\u73ed\u7684\u653b\u64ca\u3002", "volume": "\u672a\u5206\u5377", "chunks": 34, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e03\u56de\u5408\u3002\u4e00\u4e4b\u7028\u73ed\u7684\u653b\u64ca\u3002", "volume": "\u672a\u5206\u5377", "chunks": 29, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 11 \u5c71\u6751\u7f8e\u7d00\u7684\u7368\u767d", "volume": "\u7b2c\u4e8c\u5341\u4e8c\u5377", "chunks": 12, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e94\u5377 \u4e8c\u5e74\u7d1a\u7bc7 4 \u5f8c\u8a18", "volume": "\u7b2c\u5341\u4e94\u5377", "chunks": 39, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e03\u5377 \u7279\u5178 \u672c\u4eba\u4f50\u5009\u611b\u88e1\uff0c\u88ab\u4f86\u56de\u6298\u9a30", "volume": "\u7b2c\u4e03\u5377", "chunks": 61, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e94\u56de\u5408\u3002\u4e00\u4e4b\u7028\u73ed\u7684\u653b\u64ca\u3002", "volume": "\u672a\u5206\u5377", "chunks": 48, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u516b\u56de\u5408\u3002\u4e00\u4e4b\u7028\u73ed\u7684\u653b\u64ca\u3002", "volume": "\u672a\u5206\u5377", "chunks": 39, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e5d\u56de\u5408\u3002\u4e00\u4e4b\u7028\u73ed\u7684\u653b\u64ca\u3002", "volume": "\u672a\u5206\u5377", "chunks": 17, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u516b\u5377 \u5f8c\u8a18", "volume": "\u7b2c\u516b\u5377", "chunks": 8, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e00\u5377 \u5f8c\u8a18", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 10, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u516d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 5 \u5f8c\u8a18", "volume": "\u7b2c\u5341\u516d\u5377", "chunks": 13, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e5d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 8 \u5f8c\u8a18", "volume": "\u7b2c\u5341\u4e5d\u5377", "chunks": 14, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 11 \u5f8c\u8a18", "volume": "\u7b2c\u4e8c\u5341\u4e8c\u5377", "chunks": 10, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u5f8c\u8a18", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 9, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e94\u5377 \u4e09\u5e74\u7d1a\u7bc7 2 &#11093;\u5f8c\u8a18", "volume": "\u7b2c\u4e8c\u5341\u4e94\u5377", "chunks": 8, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e00\u5377 \u7279\u5178 \u6210\u5c31\u7684\u65e9\u6668", "volume": "\u7b2c\u5341\u4e00\u5377", "chunks": 11, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u516b\u5377 \u5800\u5317\u5b78\u7684\u7368\u767d", "volume": "\u7b2c\u516b\u5377", "chunks": 32, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e5d\u5377 \u7279\u5178 \u7b2c\u4e00\u4efd\u79ae\u7269", "volume": "\u7b2c\u4e5d\u5377", "chunks": 5, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u516d\u5377 \u4e09\u5e74\u7d1a\u7bc7 3 \u68ee\u4e0b\u85cd\u7279\u5178 \u69ae\u8b7d", "volume": "\u7b2c\u4e8c\u5341\u516d\u5377", "chunks": 13, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 2 \u7279\u5178 \u25cb\u5f9e\u90a3\u500b\u80cc\u5f71\u8eab\u4e0a\u6240\u898b\u4e4b\u7269", "volume": "\u7b2c\u5341\u4e09\u5377", "chunks": 13, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u516d\u5377 \u4e8c\u5e74\u7d1a\u7bc7 5 \u8336\u67f1\u4f50\u679d\u7684\u7368\u767d", "volume": "\u7b2c\u5341\u516d\u5377", "chunks": 7, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e03\u5377 \u7279\u5178 \u770b\u4e0d\u898b\u7684\u9ed1\u6697", "volume": "\u7b2c\u4e03\u5377", "chunks": 39, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e94\u5377 \u4e8c\u5e74\u7d1a\u7bc7 4 \u5929\u6fa4\u4e00\u590f\u7684\u7368\u767d", "volume": "\u7b2c\u5341\u4e94\u5377", "chunks": 27, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e8c\u5377 \u4e8c\u5e74\u7d1a\u7bc7 1 \u9234\u97f3\u7279\u5178 \u3007\u4e0d\u5c31\u982d\u767c\u55ce", "volume": "\u7b2c\u5341\u4e8c\u5377", "chunks": 36, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u5341\u4e94\u56de\u5408\u958b\u59cb\u3002\u56db\u500b\u73ed\u7d1a\u7d42\u65bc\u5e7e\u4e4e\u4e0d\u76f8\u4e0a\u4e0b\u4e86\u3002\u7b2c\u4e00\u540d\u662f\u56db\u5341\u4e8c\u5206\u7684\u4e00\u4e4b\u7028\u73ed\u3002\u5800\u5317\u73ed\u8207\u962a\u67f3\u73ed\u540c\u6a23\u4ee5\u56db\u5341\u5206\u4e26\u5217\u7b2c\u4e8c\u3002\u7b2c\u4e09\u540d\u662f\u4e09\u5341\u4e5d\u5206\u7684\u9f8d\u5712\u73ed\u3002", "volume": "\u672a\u5206\u5377", "chunks": 42, "nextEdges": 0, "prevEdges": 0, "edges": 0}, {"chapter": "\u7b2c\u4e8c\u5341\u4e09\u5377 \u4e8c\u5e74\u7d1a\u7bc7 12 \u7279\u5178 \u6ce2\u9577", "volume": "\u7b2c\u4e8c\u5341\u4e09\u5377", "chunks": 18, "nextEdges": 0, "prevEdges": 0, "edges": 0}]}];
+
+const palette = ["#d7a84d", "#72b7bb", "#d47766", "#92b66b", "#9a8fcb", "#c8865d", "#70a0d8"];
+const state = { mode: "bars", sortKey: "chunks", sortDir: -1 };
+
+const flatAll = rawData.flatMap((book, bookIndex) =>
+  book.chapters.map((chapter, index) => ({
+    ...chapter,
+    title: book.title,
+    bookIndex,
+    index,
+    color: palette[bookIndex % palette.length],
+  }))
+);
+
+const els = {
+  metrics: document.getElementById("metrics"),
+  titleFilter: document.getElementById("titleFilter"),
+  volumeFilter: document.getElementById("volumeFilter"),
+  searchInput: document.getElementById("searchInput"),
+  minChunks: document.getElementById("minChunks"),
+  rangeLabel: document.getElementById("rangeLabel"),
+  chart: document.getElementById("chart"),
+  rows: document.getElementById("chapterRows"),
+  panelTitle: document.getElementById("panelTitle"),
+  panelMeta: document.getElementById("panelMeta"),
+  tooltip: document.getElementById("tooltip"),
+};
+
+function fmt(n) {
+  return new Intl.NumberFormat("en-US").format(n);
+}
+
+function stripVolume(chapter) {
+  return chapter.replace(/^第\S+卷\s*/, "");
+}
+
+function initControls() {
+  els.titleFilter.innerHTML = `<option value="all">全部書籍</option>` +
+    rawData.map(d => `<option value="${escapeHtml(d.title)}">${escapeHtml(d.title)}</option>`).join("");
+  updateVolumeFilter();
+
+  document.querySelectorAll("#modeButtons button").forEach(button => {
+    button.addEventListener("click", () => {
+      document.querySelectorAll("#modeButtons button").forEach(b => b.classList.remove("active"));
+      button.classList.add("active");
+      state.mode = button.dataset.mode;
+      render();
+    });
+  });
+
+  [els.titleFilter, els.volumeFilter, els.searchInput, els.minChunks].forEach(el => {
+    el.addEventListener("input", () => {
+      if (el === els.titleFilter) updateVolumeFilter();
+      render();
+    });
+  });
+
+  document.querySelectorAll("th[data-sort]").forEach(th => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sort;
+      if (state.sortKey === key) state.sortDir *= -1;
+      else {
+        state.sortKey = key;
+        state.sortDir = key === "chapter" || key === "volume" ? 1 : -1;
+      }
+      renderTable(filteredData());
+    });
+  });
+}
+
+function updateVolumeFilter() {
+  const selectedTitle = els.titleFilter.value || "all";
+  const volumes = [...new Set(flatAll
+    .filter(d => selectedTitle === "all" || d.title === selectedTitle)
+    .map(d => d.volume))];
+  els.volumeFilter.innerHTML = `<option value="all">全部分卷</option>` +
+    volumes.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+}
+
+function filteredData() {
+  const title = els.titleFilter.value || "all";
+  const volume = els.volumeFilter.value || "all";
+  const q = els.searchInput.value.trim().toLowerCase();
+  const min = Number(els.minChunks.value);
+  return flatAll.filter(d =>
+    (title === "all" || d.title === title) &&
+    (volume === "all" || d.volume === volume) &&
+    d.chunks >= min &&
+    (!q || `${d.title} ${d.volume} ${d.chapter}`.toLowerCase().includes(q))
+  );
+}
+
+function renderMetrics(data) {
+  const totalChunks = d3.sum(data, d => d.chunks);
+  const totalEdges = d3.sum(data, d => d.edges);
+  const volumes = new Set(data.map(d => d.volume)).size;
+  const maxChapter = data.length ? d3.max(data, d => d.chunks) : 0;
+  els.metrics.innerHTML = [
+    ["Chapters", data.length],
+    ["Volumes", volumes],
+    ["Chunks", totalChunks],
+    ["Edges", totalEdges],
+  ].map(([label, value]) => `<div class="metric"><b>${fmt(value)}</b><span>${label}</span></div>`).join("");
+  els.rangeLabel.textContent = `目前門檻：至少 ${minLabel()} chunks；最大章節 ${fmt(maxChapter)} chunks。`;
+}
+
+function minLabel() {
+  return fmt(Number(els.minChunks.value));
+}
+
+function render() {
+  const data = filteredData();
+  renderMetrics(data);
+  renderTable(data);
+  if (state.mode === "bars") renderBars(data);
+  if (state.mode === "timeline") renderTimeline(data);
+  if (state.mode === "table") renderTableOnly(data);
+}
+
+function setupSvg(width, height, margin) {
+  els.chart.innerHTML = "";
+  return d3.select(els.chart)
+    .append("svg")
+    .attr("width", width + margin.left + margin.right)
+    .attr("height", height + margin.top + margin.bottom)
+    .append("g")
+    .attr("transform", `translate(${margin.left},${margin.top})`);
+}
+
+function renderBars(data) {
+  els.panelTitle.textContent = "Chapter Density";
+  els.panelMeta.textContent = `${fmt(data.length)} chapters`;
+  if (!data.length) return emptyChart();
+
+  const sorted = [...data].sort((a, b) => b.chunks - a.chunks).slice(0, 120);
+  const margin = { top: 22, right: 22, bottom: 130, left: 66 };
+  const width = Math.max(920, sorted.length * 13);
+  const height = 520;
+  const svg = setupSvg(width, height, margin);
+  const x = d3.scaleBand().domain(sorted.map((_, i) => i)).range([0, width]).padding(0.2);
+  const y = d3.scaleLinear().domain([0, d3.max(sorted, d => d.chunks) * 1.08]).nice().range([height, 0]);
+
+  svg.append("g")
+    .attr("class", "grid")
+    .call(d3.axisLeft(y).ticks(7).tickSize(-width).tickFormat(""));
+  svg.append("g").attr("class", "axis").call(d3.axisLeft(y).ticks(7));
+  svg.append("g").attr("class", "axis").attr("transform", `translate(0,${height})`).call(d3.axisBottom(x).tickValues([]));
+
+  svg.selectAll("rect")
+    .data(sorted)
+    .join("rect")
+    .attr("x", (_, i) => x(i))
+    .attr("y", d => y(d.chunks))
+    .attr("width", x.bandwidth())
+    .attr("height", d => height - y(d.chunks))
+    .attr("fill", d => d.color)
+    .attr("opacity", 0.88)
+    .on("mousemove", (event, d) => showTip(event, tipHtml(d)))
+    .on("mouseleave", hideTip);
+
+  svg.selectAll(".label")
+    .data(sorted.filter((_, i) => i % Math.ceil(sorted.length / 42) === 0))
+    .join("text")
+    .attr("x", d => x(sorted.indexOf(d)) + x.bandwidth() / 2)
+    .attr("y", height + 12)
+    .attr("transform", d => `rotate(-58, ${x(sorted.indexOf(d)) + x.bandwidth() / 2}, ${height + 12})`)
+    .attr("text-anchor", "end")
+    .attr("fill", "#aaa18e")
+    .attr("font-size", 11)
+    .text(d => stripVolume(d.chapter).slice(0, 22));
+}
+
+function renderTimeline(data) {
+  els.panelTitle.textContent = "Volume Spine";
+  els.panelMeta.textContent = "width = chunk volume";
+  if (!data.length) return emptyChart();
+
+  const grouped = d3.groups(data, d => d.volume).map(([volume, chapters]) => ({
+    volume,
+    chunks: d3.sum(chapters, d => d.chunks),
+    chapters,
+  }));
+  const margin = { top: 24, right: 30, bottom: 34, left: 190 };
+  const width = Math.max(900, els.chart.clientWidth - margin.left - margin.right - 2);
+  const rowH = 46;
+  const height = Math.max(420, grouped.length * rowH);
+  const svg = setupSvg(width, height, margin);
+  const x = d3.scaleLinear().domain([0, d3.max(grouped, d => d.chunks)]).nice().range([0, width]);
+
+  svg.append("g")
+    .attr("class", "grid")
+    .call(d3.axisTop(x).ticks(7).tickSize(-height).tickFormat(""));
+
+  grouped.forEach((group, row) => {
+    const y = row * rowH + 10;
+    svg.append("text")
+      .attr("x", -14)
+      .attr("y", y + 15)
+      .attr("text-anchor", "end")
+      .attr("fill", "#d7a84d")
+      .attr("font-size", 13)
+      .text(group.volume);
+
+    let cursor = 0;
+    group.chapters.forEach(ch => {
+      const w = Math.max(2, x(ch.chunks));
+      svg.append("rect")
+        .attr("x", cursor)
+        .attr("y", y)
+        .attr("width", w)
+        .attr("height", 26)
+        .attr("fill", ch.color)
+        .attr("opacity", 0.82)
+        .on("mousemove", event => showTip(event, tipHtml(ch)))
+        .on("mouseleave", hideTip);
+      cursor += w + 2;
+    });
+
+    svg.append("text")
+      .attr("x", Math.min(cursor + 8, width - 8))
+      .attr("y", y + 17)
+      .attr("fill", "#aaa18e")
+      .attr("font-family", "Consolas, Courier New, monospace")
+      .attr("font-size", 12)
+      .text(`${fmt(group.chunks)} chunks`);
+  });
+}
+
+function renderTableOnly(data) {
+  els.panelTitle.textContent = "Index Mode";
+  els.panelMeta.textContent = "use the table below";
+  els.chart.innerHTML = `<div class="empty">主視圖已切換到章節索引。使用下方表格排序與搜尋。</div>`;
+}
+
+function renderTable(data) {
+  const sorted = [...data].sort((a, b) => {
+    const av = a[state.sortKey];
+    const bv = b[state.sortKey];
+    if (typeof av === "number") return (av - bv) * state.sortDir;
+    return String(av).localeCompare(String(bv), "zh-Hant") * state.sortDir;
+  });
+  els.rows.innerHTML = sorted.map(d => `
+    <tr>
+      <td>${escapeHtml(d.volume)}</td>
+      <td>${escapeHtml(d.chapter)}</td>
+      <td class="num">${fmt(d.chunks)}</td>
+      <td class="num">${fmt(d.edges)}</td>
+    </tr>
+  `).join("");
+}
+
+function emptyChart() {
+  els.chart.innerHTML = `<div class="empty">沒有符合篩選條件的章節。</div>`;
+}
+
+function tipHtml(d) {
+  return `<b>${escapeHtml(d.chapter)}</b><br>${escapeHtml(d.title)}<br>Volume: ${escapeHtml(d.volume)}<br>Chunks: <b>${fmt(d.chunks)}</b><br>Edges: ${fmt(d.edges)}`;
+}
+
+function showTip(event, html) {
+  els.tooltip.innerHTML = html;
+  els.tooltip.style.opacity = 1;
+  els.tooltip.style.left = `${event.clientX + 16}px`;
+  els.tooltip.style.top = `${event.clientY - 8}px`;
+}
+
+function hideTip() {
+  els.tooltip.style.opacity = 0;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+window.addEventListener("resize", () => {
+  if (state.mode === "timeline") render();
+});
+
+initControls();
+render();
+</script>
+</body>
+</html>

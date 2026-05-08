@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import httpx
 from openai import OpenAI
@@ -24,6 +25,7 @@ CHAT_DB_PATH = os.environ.get("NOVEL_CHAT_DB_PATH", "./chroma_novel_chat")
 GRAPH_EDGE_FILE = "graph_edges.jsonl"
 NOVEL_TOP_K = 5
 GRAPH_NEIGHBORS_PER_SIDE = 3
+GRAPH_CHARACTER_NEIGHBORS = 2   # character-edge neighbours per retrieved chunk
 
 client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
 
@@ -46,14 +48,16 @@ class StoryGraph:
             source = edge.get("source")
             target = edge.get("target")
             edge_type = edge.get("type")
-            if not source or not target or edge_type not in {"prev", "next"}:
+            if not source or not target or edge_type not in {"prev", "next", "character"}:
                 continue
             self.by_source.setdefault(source, {}).setdefault(edge_type, []).append(target)
 
     def around(self, chunk_id: str) -> list[str]:
-        prev_ids = self.by_source.get(chunk_id, {}).get("prev", [])[:GRAPH_NEIGHBORS_PER_SIDE]
-        next_ids = self.by_source.get(chunk_id, {}).get("next", [])[:GRAPH_NEIGHBORS_PER_SIDE]
-        return list(reversed(prev_ids)) + [chunk_id] + next_ids
+        nbrs = self.by_source.get(chunk_id, {})
+        prev_ids      = nbrs.get("prev",      [])[:GRAPH_NEIGHBORS_PER_SIDE]
+        next_ids      = nbrs.get("next",      [])[:GRAPH_NEIGHBORS_PER_SIDE]
+        character_ids = nbrs.get("character", [])[:GRAPH_CHARACTER_NEIGHBORS]
+        return list(reversed(prev_ids)) + [chunk_id] + next_ids + character_ids
 
 
 story_graph = StoryGraph(Path(NOVEL_DB_PATH) / GRAPH_EDGE_FILE)
