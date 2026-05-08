@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "rag-memory": {
+      "type": "local",
+      "command": ["uv", "run", "--directory", "..", "python", "ragm_mcp/server.py"],
+      "enabled": true
+    }
+  }
+}

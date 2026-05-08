@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Local secrets
+.env
+.env.*
+
+# Generated memory databases and smoke-test data
+chroma*/
+**/chroma*/
+.*_smoke/
+
+# Local editor/system noise
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
