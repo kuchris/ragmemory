@@ -14,9 +14,9 @@ from mcp.server.fastmcp import FastMCP
 DB_PATH = Path(__file__).parent / "chroma_db"
 CHUNK_MAX_TOKENS = 300
 CHUNK_MIN_TOKENS = 80
-RECENT_MESSAGES = 12
-RETRIEVE_TOP_K = 5
-CONTEXT_TOKEN_BUDGET = 2000
+RECENT_MESSAGES = 6
+RETRIEVE_TOP_K = 3
+CONTEXT_TOKEN_BUDGET = 800
 RRF_K = 60
 
 HEADER_RE = re.compile(r"^#{1,3}\s+(.+)$", re.MULTILINE)

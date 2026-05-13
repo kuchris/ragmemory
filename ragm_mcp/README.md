@@ -75,6 +75,25 @@ Data is stored in `chroma_db/` next to `server.py`:
 }
 ```
 
+## LM Studio config (`%USERPROFILE%\.lmstudio\mcp.json`)
+
+In LM Studio, open the right sidebar `Program` tab, then choose `Install` -> `Edit mcp.json`.
+Add this server entry under `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "rag-memory": {
+      "command": "uv",
+      "args": ["run", "python", "ragm_mcp/server.py"],
+      "cwd": "C:/path/to/master-folder"
+    }
+  }
+}
+```
+
+If LM Studio cannot find `uv`, replace `"command": "uv"` with the full path to `uv.exe`.
+
 ## OpenCode config (`~/.config/opencode/opencode.json`)
 
 ```json
