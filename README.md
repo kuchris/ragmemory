@@ -85,6 +85,7 @@ Configs, tables, Mermaid diagrams, and code blocks are detected by code when pos
 | `test_memory.py` | Basic raw retrieval behavior test. |
 | `test_structured_memory.py` | NVIDIA-backed structured extraction test. |
 | `test_ledger_drop.py` | Forced context-budget drop test. |
+| `ragm_mcp/hooks/` | Codex hook scripts and install notes for automatic memory. |
 | `llamac_plan.md` | Design notes for future llama.cpp / pflash direction. |
 
 Generated folders:
