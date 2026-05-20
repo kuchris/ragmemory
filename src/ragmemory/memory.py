@@ -34,11 +34,6 @@ FENCED_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
-HIGH_SIGNAL_WORDS = {
-    "decided", "decision", "must", "never", "always", "constraint",
-    "requirement", "critical", "important", "warning", "error", "fix",
-    "bug", "todo", "note", "remember",
-}
 MISSING_CTX_PHRASES = [
     "as we said", "earlier", "we decided", "you mentioned", "what did we",
     "continue", "the thing we", "remind me", "what was",
@@ -48,12 +43,8 @@ MISSING_CTX_PHRASES = [
 # ── Importance scoring ────────────────────────────────────────────────────────
 
 def score_importance(text: str) -> float:
-    score = 0.5
-    score += min(len(text.split()) / 80, 0.15)
-    score += 0.15 * any(w in text.lower() for w in HIGH_SIGNAL_WORDS)
-    score += 0.10 * bool(re.search(r"```|def |class |import ", text))
-    score += 0.05 * bool(re.search(r"\b\d+\.?\d*\b", text))
-    return round(min(score, 1.0), 3)
+    """Compatibility hook for old callers; raw chunk retention is score-based."""
+    return 0.5
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -73,6 +64,7 @@ class RetrievedChunk:
     text: str
     importance: float
     message_id: int
+    score: float = 0.0
 
 
 @dataclass
@@ -792,6 +784,7 @@ class MemoryStore:
                 text=doc,
                 importance=meta.get("importance", 0.5),
                 message_id=meta.get("message_id", meta.get("turn_id", 0)),
+                score=rrf_scores.get(id, 0.0),
             )
             for id, doc, meta in zip(fetched["ids"], fetched["documents"], fetched["metadatas"])
         }
@@ -830,13 +823,14 @@ class MemoryStore:
                     retrieved.append(RetrievedChunk(
                         id=entry.chunk_id, text=entry.text,
                         importance=entry.importance, message_id=entry.message_id,
+                        score=entry.importance,
                     ))
             print(f"  [ledger recovery] searched archived chunks")
 
         # compress to budget
         budget = CONTEXT_TOKEN_BUDGET
         kept, dropped = [], []
-        for chunk in sorted(retrieved, key=lambda c: -c.importance):
+        for chunk in sorted(retrieved, key=lambda c: (-c.score, -c.message_id)):
             tokens = self._estimate_tokens(chunk.text)
             if budget - tokens >= 0:
                 kept.append(chunk)
