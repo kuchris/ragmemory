@@ -1,0 +1,64 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "text": "Project Alpha decision: use SQLite for raw message state. Keep Chroma only for vector chunks."
+    },
+    {
+      "role": "assistant",
+      "text": "Noted. SQLite owns raw messages and next_message_id, while Chroma remains the vector index."
+    },
+    {
+      "role": "user",
+      "text": "Codex hook rule: do not move ragm_mcp/chroma_db yet because hooks rely on that path."
+    },
+    {
+      "role": "assistant",
+      "text": "The MCP storage path stays separate from the root .data folder until hook storage is redesigned."
+    },
+    {
+      "role": "user",
+      "text": "Novel experiment default database is .data/chroma_novel and chat history is .data/chroma_novel_chat."
+    },
+    {
+      "role": "user",
+      "text": "API contract rule: build_context should return a ContextBundle, and format_for_prompt should create the prompt string."
+    },
+    {
+      "role": "assistant",
+      "text": "Returning structured context prevents callers from parsing a giant prompt string."
+    }
+  ],
+  "cases": [
+    {
+      "name": "sqlite_state_decision",
+      "query": "where is raw message state stored?",
+      "top_k": 3,
+      "must_contain": ["SQLite for raw message state"]
+    },
+    {
+      "name": "mcp_hook_path_rule",
+      "query": "what path should not move because hooks rely on it?",
+      "top_k": 3,
+      "must_contain": ["ragm_mcp/chroma_db"]
+    },
+    {
+      "name": "novel_default_db",
+      "query": "what is the novel experiment database path?",
+      "top_k": 3,
+      "must_contain": [".data/chroma_novel"]
+    },
+    {
+      "name": "context_bundle_contract",
+      "query": "what should build_context return?",
+      "top_k": 3,
+      "must_contain": ["ContextBundle"]
+    },
+    {
+      "name": "prompt_format_boundary",
+      "query": "what creates the prompt string?",
+      "top_k": 3,
+      "must_contain": ["format_for_prompt"]
+    }
+  ]
+}
