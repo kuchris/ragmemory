@@ -120,6 +120,14 @@ class AddMessageResult:
 
 
 @dataclass
+class StructuredExtractionJob:
+    job_id: str
+    role: str
+    text: str
+    message_id: int
+
+
+@dataclass
 class ForgetPreview:
     messages: list[MessageRecord]
     chunks: list[RetrievedChunk]
@@ -598,6 +606,7 @@ class MemoryStore:
         self.raw_log: list[dict] = []
         self._message_hashes: dict[tuple[str, str], int] = {}
         self._tombstoned_message_ids: set[int] = set()
+        self._pending_extractions: list[StructuredExtractionJob] = []
         self.message_id = 0
 
         self._load_state()
@@ -796,7 +805,9 @@ class MemoryStore:
 
     # ── Write ─────────────────────────────────────────────────────────────────
 
-    def add_message(self, role: str, text: str, extract_structured: bool = True) -> AddMessageResult:
+    def add_message(
+        self, role: str, text: str, extract_structured: bool | str = True
+    ) -> AddMessageResult:
         content_hash = self._content_hash(text)
         dedup_key = (role, content_hash)
         if dedup_key in self._message_hashes:
@@ -861,15 +872,12 @@ class MemoryStore:
         for c in chunks:
             self.bm25.add(c.id, c.text)
 
-        if extract_structured:
-            structured = self.artifact_extractor.extract(role, text, self.message_id)
-            exact_sources = {obj.source_text.strip() for obj in structured}
-            llm_structured = self.structured_extractor.extract(role, text, self.message_id)
-            structured.extend(
-                obj for obj in llm_structured
-                if obj.source_text.strip() not in exact_sources
-                and not self._duplicates_exact_artifact(obj, exact_sources)
-            )
+        queued_job_ids = []
+        if extract_structured == "background":
+            structured = []
+            queued_job_ids = [self._queue_structured_extraction(role, text, self.message_id)]
+        elif extract_structured:
+            structured = self._extract_structured_objects(role, text, self.message_id)
             self.structured.add_many(structured)
             if structured:
                 print(f"  [structured {len(structured)} object(s) | total: {len(self.structured)}]")
@@ -887,6 +895,7 @@ class MemoryStore:
             content_hash=content_hash,
             chunk_ids=[c.id for c in chunks],
             structured_object_ids=[obj.id for obj in structured],
+            queued_job_ids=queued_job_ids,
         )
         return AddMessageResult(
             saved=True,
@@ -895,8 +904,74 @@ class MemoryStore:
             content_hash=content_hash,
             chunk_ids=[c.id for c in chunks],
             structured_object_ids=[obj.id for obj in structured],
-            queued_job_ids=[],
+            queued_job_ids=queued_job_ids,
         )
+
+    def _extract_structured_objects(
+        self, role: str, text: str, message_id: int
+    ) -> list[StructuredMemoryObject]:
+        structured = self.artifact_extractor.extract(role, text, message_id)
+        exact_sources = {obj.source_text.strip() for obj in structured}
+        llm_structured = self.structured_extractor.extract(role, text, message_id)
+        structured.extend(
+            obj for obj in llm_structured
+            if obj.source_text.strip() not in exact_sources
+            and not self._duplicates_exact_artifact(obj, exact_sources)
+        )
+        return structured
+
+    def _queue_structured_extraction(self, role: str, text: str, message_id: int) -> str:
+        job = StructuredExtractionJob(
+            job_id=f"structured_{uuid.uuid4()}",
+            role=role,
+            text=text,
+            message_id=message_id,
+        )
+        self._pending_extractions.append(job)
+        self._log_event(
+            "structured_extraction_queued",
+            job_id=job.job_id,
+            message_id=message_id,
+        )
+        return job.job_id
+
+    def run_pending_extractions(self, limit: int | None = None) -> list[str]:
+        if limit is not None and limit <= 0:
+            return []
+        max_jobs = len(self._pending_extractions) if limit is None else limit
+        remaining = []
+        structured_object_ids = []
+
+        for job in self._pending_extractions:
+            if max_jobs <= 0:
+                remaining.append(job)
+                continue
+            max_jobs -= 1
+            if self._is_message_tombstoned(job.message_id):
+                self._log_event(
+                    "structured_extraction_skipped",
+                    job_id=job.job_id,
+                    message_id=job.message_id,
+                    reason="message_tombstoned",
+                )
+                continue
+            structured = self._extract_structured_objects(
+                job.role, job.text, job.message_id
+            )
+            self.structured.add_many(structured)
+            object_ids = [obj.id for obj in structured]
+            structured_object_ids.extend(object_ids)
+            self._log_event(
+                "structured_extraction_completed",
+                job_id=job.job_id,
+                message_id=job.message_id,
+                structured_object_ids=object_ids,
+            )
+            if structured:
+                print(f"  [structured {len(structured)} object(s) | total: {len(self.structured)}]")
+
+        self._pending_extractions = remaining
+        return structured_object_ids
 
     # ── Retrieval (hybrid BM25 + embeddings via RRF) ──────────────────────────
 

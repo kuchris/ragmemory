@@ -87,6 +87,7 @@ Configs, tables, Mermaid diagrams, and code blocks are detected by code when pos
 | `tests/test_sqlite_state.py` | SQLite raw-message state and legacy import test. |
 | `tests/test_public_api_signatures.py` | Public API signature contract test. |
 | `tests/test_golden_retrieval.py` | Fixed corpus retrieval regression test. |
+| `tests/test_background_extraction.py` | In-process background structured extraction test. |
 | `tests/test_context_bundle.py` | Structured context bundle and wrapper compatibility test. |
 | `tests/test_search_api.py` | Public search result API test. |
 | `tests/test_forget_preview.py` | Preview-only forget API test. |

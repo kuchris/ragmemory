@@ -14,6 +14,7 @@ The public library surface should be:
 
 ```python
 store.add_message(role, text, *, extract_structured=True) -> AddMessageResult
+store.run_pending_extractions(limit=None) -> list[str]
 store.build_context_bundle(query) -> ContextBundle
 store.search(query, top_k=None) -> list[SearchResult]
 store.forget(*, query=None, before=None, message_ids=None, confirm=False) -> ForgetPreview | ForgetResult
@@ -68,9 +69,26 @@ Rules:
 - Duplicate detection should use normalized exact text or a content hash, not
   substring matching.
 - If a message is deduped, return `saved=False`, `deduped=True`, and the hash.
-- The method should return before slow background structured extraction when
-  background mode exists.
+- `extract_structured=True` extracts structured objects before returning.
+- `extract_structured=False` skips structured extraction.
+- `extract_structured="background"` saves raw memory immediately and queues an
+  in-process structured extraction job.
 - Caller-provided metadata is reserved for a later API revision.
+
+## run_pending_extractions
+
+```python
+store.run_pending_extractions(limit=None) -> list[str]
+```
+
+Runs queued in-process structured extraction jobs and returns created structured
+object IDs.
+
+Rules:
+
+- Jobs are in-memory only in the current implementation.
+- `limit` caps the number of jobs processed.
+- Tombstoned messages are skipped.
 
 ## build_context_bundle
 
@@ -204,7 +222,7 @@ These ideas are intentionally not part of the current implemented API:
 - `filters` on `build_context_bundle` and `search`.
 - Caller-provided metadata on `add_message`.
 - Semantic `forget(query=...)`.
-- Background structured extraction jobs.
+- Durable background extraction jobs and worker threads.
 
 ## MCP Mapping
 
@@ -231,7 +249,7 @@ The MCP response can remain a string, but the library should not be string-only.
 
 - Should `remember_document` be a public fifth method or a thin wrapper around
   `add_message(role="document", ...)`?
-- Should background extraction return only job IDs, or also a wait handle?
+- Should background extraction jobs become durable across process restarts?
 - Should tombstones be compacted manually only, or by an explicit retention
   policy later?
 - What is the first stable storage version number?

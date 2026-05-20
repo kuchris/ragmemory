@@ -23,6 +23,7 @@ def names(callable_obj):
 
 
 assert names(MemoryStore.add_message) == ["self", "role", "text", "extract_structured"]
+assert names(MemoryStore.run_pending_extractions) == ["self", "limit"]
 assert names(MemoryStore.build_context_bundle) == ["self", "user_message"]
 assert names(MemoryStore.search) == ["self", "query", "top_k"]
 assert names(MemoryStore.forget) == [
