@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-DB_PATH = Path("./chroma_novel")
+DB_PATH = Path("./.data/chroma_novel")
 edge_path = DB_PATH / "graph_edges.jsonl"
 cache_path = DB_PATH / "character_cache.json"
 

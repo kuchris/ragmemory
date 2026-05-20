@@ -486,7 +486,7 @@ class Chunker:
 # ── Memory store ──────────────────────────────────────────────────────────────
 
 class MemoryStore:
-    def __init__(self, db_path: str = "./chroma_db"):
+    def __init__(self, db_path: str = "./.data/chroma_db"):
         self.db_path = Path(db_path)
         self.state_file = self.db_path / "state.json"
 

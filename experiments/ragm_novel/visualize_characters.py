@@ -2,7 +2,7 @@
 Build a character co-occurrence visualization from character_cache.json.
 
 This does not call an LLM and does not rebuild character edges. It only reads:
-    chroma_novel/character_cache.json
+    .data/chroma_novel/character_cache.json
 
 Run:
     uv run python experiments/ragm_novel/visualize_characters.py
@@ -17,7 +17,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
-DB_PATH = Path("./chroma_novel")
+DB_PATH = Path("./.data/chroma_novel")
 CACHE_PATH = DB_PATH / "character_cache.json"
 OUT_PATH = Path("character_visualization.html")
 TOP_N = 90

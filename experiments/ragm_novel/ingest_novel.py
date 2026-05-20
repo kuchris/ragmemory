@@ -5,7 +5,7 @@ Run:
     uv run python experiments/ragm_novel/ingest_novel.py path\to\novel.txt
 
 Use the same DB as chat.py:
-    uv run python experiments/ragm_novel/ingest_novel.py path\to\novel.txt --db-path ./chroma_structured_test
+    uv run python experiments/ragm_novel/ingest_novel.py path\to\novel.txt --db-path ./.data/chroma_structured_test
 """
 import argparse
 import json
@@ -27,7 +27,7 @@ except ImportError:
     tqdm = None
 
 
-DEFAULT_DB_PATH = "./chroma_novel"
+DEFAULT_DB_PATH = "./.data/chroma_novel"
 DEFAULT_TARGET_CHARS = 900
 DEFAULT_OVERLAP_CHARS = 120
 GRAPH_EDGE_FILE = "graph_edges.jsonl"

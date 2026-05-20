@@ -9,7 +9,7 @@ Run:
     uv run python experiments/ragm_novel/build_character_edges.py
     uv run python experiments/ragm_novel/build_character_edges.py --dry-run
     uv run python experiments/ragm_novel/build_character_edges.py --top-k 5
-    uv run python experiments/ragm_novel/build_character_edges.py --db-path ./chroma_novel
+    uv run python experiments/ragm_novel/build_character_edges.py --db-path ./.data/chroma_novel
 
 Resume: interrupted runs are safe — chunk results are cached in
 character_cache.json so already-processed chunks are skipped.
@@ -42,7 +42,7 @@ BASE_URL = os.environ.get("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")
 API_KEY = os.environ.get("LMSTUDIO_API_KEY", "lm-studio")
 
 # ── defaults ───────────────────────────────────────────────────────────────
-DEFAULT_DB_PATH = "./chroma_novel"
+DEFAULT_DB_PATH = "./.data/chroma_novel"
 GRAPH_EDGE_FILE = "graph_edges.jsonl"
 CACHE_FILE = "character_cache.json"   # chunk_id -> [character, ...]
 CHARACTER_NEIGHBORS = 5               # connect each chunk to N nearest per character

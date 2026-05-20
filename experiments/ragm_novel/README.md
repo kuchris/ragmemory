@@ -14,11 +14,11 @@ Run all commands from the **repo root** (`ragmemory/`).
 uv run python experiments/ragm_novel/ingest_novel.py novels/my_novel.txt --title "My Novel"
 ```
 
-Splits the novel into ~900-char chunks by chapter, embeds them into ChromaDB (`./chroma_novel`), and writes sequential `next`/`prev` edges to `chroma_novel/graph_edges.jsonl`.
+Splits the novel into ~900-char chunks by chapter, embeds them into ChromaDB (`./.data/chroma_novel`), and writes sequential `next`/`prev` edges to `.data/chroma_novel/graph_edges.jsonl`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--db-path` | `./chroma_novel` | ChromaDB output path |
+| `--db-path` | `./.data/chroma_novel` | ChromaDB output path |
 | `--title` | filename stem | Novel title stored in metadata |
 | `--target-chars` | `900` | Target chunk size |
 | `--overlap-chars` | `120` | Overlap between chunks |
@@ -45,7 +45,7 @@ uv run python experiments/ragm_novel/build_character_edges_fast.py --dry-run
 | `--top-k` | `5` | Nearest same-character chunks to connect per chunk |
 | `--dry-run` | off | Extract + cache only, no edge writes |
 
-Extraction results are cached in `chroma_novel/character_cache.json`. Re-runs skip already-processed chunks.
+Extraction results are cached in `.data/chroma_novel/character_cache.json`. Re-runs skip already-processed chunks.
 
 **Character normalization** — aliases are merged via `ALIAS_MAP` in the script (e.g. `清隆` → `綾小路`). Edit the map to add novel-specific aliases before running.
 
@@ -76,14 +76,14 @@ At query time:
 | `LMSTUDIO_MODEL` | `gemma-4-e4b-...` | Model name in LM Studio |
 | `LMSTUDIO_BASE_URL` | `http://localhost:1234/v1` | LM Studio API URL |
 | `LMSTUDIO_MAX_TOKENS` | `10000` | Max tokens per response |
-| `NOVEL_DB_PATH` | `./chroma_novel` | Novel ChromaDB path |
-| `NOVEL_CHAT_DB_PATH` | `./chroma_novel_chat` | Chat history DB path |
+| `NOVEL_DB_PATH` | `./.data/chroma_novel` | Novel ChromaDB path |
+| `NOVEL_CHAT_DB_PATH` | `./.data/chroma_novel_chat` | Chat history DB path |
 
 ---
 
 ## Graph structure
 
-All edges live in `chroma_novel/graph_edges.jsonl`. Each line is one directed edge:
+All edges live in `.data/chroma_novel/graph_edges.jsonl`. Each line is one directed edge:
 
 ```json
 {"source": "<chunk_id>", "target": "<chunk_id>", "type": "next|prev|character", "weight": 1.0, "character": "堀北", "source_title": "...", "chapter": "..."}

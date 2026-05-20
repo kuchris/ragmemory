@@ -45,7 +45,7 @@ BASE_URL = os.environ.get("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")
 API_KEY  = os.environ.get("LMSTUDIO_API_KEY",  "lm-studio")
 
 # ── defaults ───────────────────────────────────────────────────────────────
-DEFAULT_DB_PATH        = "./chroma_novel"
+DEFAULT_DB_PATH        = "./.data/chroma_novel"
 GRAPH_EDGE_FILE        = "graph_edges.jsonl"
 CACHE_FILE             = "character_cache.json"
 DEFAULT_BATCH_SIZE     = 8    # chunks per LLM call

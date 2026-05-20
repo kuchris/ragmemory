@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from ragmemory.memory import MemoryStore
 
-DB_PATH = Path("./chroma_test")
+DB_PATH = Path("./.data/chroma_test")
 
 if DB_PATH.exists():
     shutil.rmtree(DB_PATH)

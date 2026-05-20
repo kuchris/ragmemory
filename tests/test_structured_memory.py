@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ragmemory.memory import MemoryStore
 
-DB_PATH = Path("./chroma_structured_test")
+DB_PATH = Path("./.data/chroma_structured_test")
 LEDGER_PATH = DB_PATH / "structured_memory.jsonl"
 
 message = """

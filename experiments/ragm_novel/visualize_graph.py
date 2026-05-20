@@ -7,7 +7,7 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-EDGE_PATH = Path("chroma_novel/graph_edges.jsonl")
+EDGE_PATH = Path(".data/chroma_novel/graph_edges.jsonl")
 OUT_PATH = Path("graph_visualization.html")
 
 

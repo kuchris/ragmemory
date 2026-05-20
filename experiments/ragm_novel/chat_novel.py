@@ -20,8 +20,8 @@ BASE_URL = os.environ.get("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")
 API_KEY = os.environ.get("LMSTUDIO_API_KEY", "lm-studio")
 MAX_TOKENS = int(os.environ.get("LMSTUDIO_MAX_TOKENS", "10000"))
 
-NOVEL_DB_PATH = os.environ.get("NOVEL_DB_PATH", "./chroma_novel")
-CHAT_DB_PATH = os.environ.get("NOVEL_CHAT_DB_PATH", "./chroma_novel_chat")
+NOVEL_DB_PATH = os.environ.get("NOVEL_DB_PATH", "./.data/chroma_novel")
+CHAT_DB_PATH = os.environ.get("NOVEL_CHAT_DB_PATH", "./.data/chroma_novel_chat")
 GRAPH_EDGE_FILE = "graph_edges.jsonl"
 NOVEL_TOP_K = 5
 GRAPH_NEIGHBORS_PER_SIDE = 3

@@ -91,10 +91,10 @@ Configs, tables, Mermaid diagrams, and code blocks are detected by code when pos
 Generated folders:
 
 ```text
-chroma_structured_test/
-chroma_test/
-chroma_ledger_test/
-chroma_db/
+.data/chroma_structured_test/
+.data/chroma_test/
+.data/chroma_ledger_test/
+.data/chroma_db/
 ```
 
 ## Setup
@@ -128,13 +128,13 @@ uv run python scripts/chat.py
 `scripts/chat.py` defaults to:
 
 ```text
-./chroma_structured_test
+./.data/chroma_structured_test
 ```
 
 Use another DB:
 
 ```powershell
-$env:RAGMEMORY_DB_PATH='./chroma_db'
+$env:RAGMEMORY_DB_PATH='./.data/chroma_db'
 uv run python scripts/chat.py
 ```
 

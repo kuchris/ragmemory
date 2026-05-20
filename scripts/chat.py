@@ -5,7 +5,7 @@ from ragmemory.memory import MemoryStore
 
 # MODEL = "meta/llama-3.1-8b-instruct"
 # API_KEY_ENV = "NVIDIA_API_KEY"
-# DB_PATH = os.environ.get("RAGMEMORY_DB_PATH", "./chroma_structured_test")
+# DB_PATH = os.environ.get("RAGMEMORY_DB_PATH", "./.data/chroma_structured_test")
 
 # api_key = os.environ.get(API_KEY_ENV)
 # if not api_key:
@@ -19,7 +19,7 @@ from ragmemory.memory import MemoryStore
 # MODEL = "qwopus3.6-35b-a3b-v1"
 MODEL = "gemma-4-e4b-uncensored-hauhaucs-aggressive"
 API_KEY_ENV = "LMSTUDIO_API_KEY"
-DB_PATH = os.environ.get("RAGMEMORY_DB_PATH", "./chroma_structured_test")
+DB_PATH = os.environ.get("RAGMEMORY_DB_PATH", "./.data/chroma_structured_test")
 
 api_key = os.environ.get(API_KEY_ENV, "lm-studio")
 

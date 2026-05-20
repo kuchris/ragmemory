@@ -6,7 +6,7 @@ Run:
 """
 from ragmemory.memory import MemoryStore
 
-DB_PATH = "./chroma_structured_test"
+DB_PATH = "./.data/chroma_structured_test"
 MAX_CHARS = 700
 
 

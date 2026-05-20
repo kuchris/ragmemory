@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-DEFAULT_DB_PATH = "./chroma_novel"
+DEFAULT_DB_PATH = "./.data/chroma_novel"
 GRAPH_EDGE_FILE = "graph_edges.jsonl"
 
 ALIAS_MAP: dict[str, str] = {

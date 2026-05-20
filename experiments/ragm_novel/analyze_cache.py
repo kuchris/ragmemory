@@ -2,7 +2,7 @@
 import json, sys, collections
 sys.stdout.reconfigure(encoding="utf-8")
 
-cache = json.loads(open("chroma_novel/character_cache.json", encoding="utf-8").read())
+cache = json.loads(open(".data/chroma_novel/character_cache.json", encoding="utf-8").read())
 
 counter = collections.Counter()
 for names in cache.values():
