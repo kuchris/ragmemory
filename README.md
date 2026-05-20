@@ -82,6 +82,7 @@ Configs, tables, Mermaid diagrams, and code blocks are detected by code when pos
 | `scripts/chat.py` | CLI chat using NVIDIA API and RagMemory context. |
 | `scripts/ask_memory.py` | Prints retrieved context for preset questions. |
 | `scripts/view_chunks.py` | Shows raw Chroma chunks. |
+| `scripts/inspect_events.py` | Filters the JSONL event log. |
 | `tests/test_memory.py` | Basic raw retrieval behavior test. |
 | `tests/test_bm25_lazy_rebuild.py` | BM25 lazy rebuild behavior test. |
 | `tests/test_dedup.py` | Normalized duplicate-message skip test. |
@@ -90,6 +91,7 @@ Configs, tables, Mermaid diagrams, and code blocks are detected by code when pos
 | `tests/test_golden_retrieval.py` | Fixed corpus retrieval regression test. |
 | `tests/test_background_extraction.py` | In-process background structured extraction test. |
 | `tests/test_chat_background_extraction.py` | CLI chat background extraction wiring test. |
+| `tests/test_inspect_events.py` | Event log inspector script test. |
 | `tests/test_context_bundle.py` | Structured context bundle and wrapper compatibility test. |
 | `tests/test_search_api.py` | Public search result API test. |
 | `tests/test_forget_preview.py` | Preview-only forget API test. |
@@ -167,6 +169,25 @@ View raw chunks:
 ```powershell
 uv run python scripts/view_chunks.py
 ```
+
+Inspect recent event-log entries:
+
+```powershell
+uv run python scripts/inspect_events.py --db-path ./.data/chroma_structured_test --limit 20
+uv run python scripts/inspect_events.py --event memory_tombstoned
+uv run python scripts/inspect_events.py --message-id 12 --json
+```
+
+## Backup
+
+Back up the DB directory you actually use, for example:
+
+```powershell
+Copy-Item -Recurse .\.data\chroma_structured_test .\.data\backup-chroma_structured_test
+```
+
+That directory contains Chroma state, `state.sqlite`, `ledger.json`,
+`structured_memory.jsonl`, and `events.jsonl`.
 
 Test structured extraction:
 
