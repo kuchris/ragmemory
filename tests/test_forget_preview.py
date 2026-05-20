@@ -68,8 +68,8 @@ except ValueError:
     pass
 
 try:
-    store.forget(message_ids=[result.message_id], confirm=True)
-    raise AssertionError("confirm=True should not be implemented yet")
+    store.forget(message_ids=[result.message_id], query="preview")
+    raise AssertionError("query selector should not be implemented yet")
 except NotImplementedError:
     pass
 

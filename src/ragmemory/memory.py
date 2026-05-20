@@ -133,6 +133,12 @@ class ForgetPreview:
 
 
 @dataclass
+class ForgetResult(ForgetPreview):
+    tombstoned_count: int
+    event_id: str
+
+
+@dataclass
 class ContextBundle:
     query: str
     recent: list[MessageRecord]
@@ -591,6 +597,7 @@ class MemoryStore:
         self.bm25 = BM25Index()
         self.raw_log: list[dict] = []
         self._message_hashes: dict[tuple[str, str], int] = {}
+        self._tombstoned_message_ids: set[int] = set()
         self.message_id = 0
 
         self._load_state()
@@ -622,9 +629,13 @@ class MemoryStore:
             next_id = conn.execute(
                 "SELECT value FROM meta WHERE key = 'next_message_id'"
             ).fetchone()
+            tombstoned_rows = conn.execute(
+                "SELECT message_id FROM messages WHERE tombstoned = 1"
+            ).fetchall()
 
         for message in self.raw_log:
             self._message_hashes[(message["role"], message["content_hash"])] = message["message_id"]
+        self._tombstoned_message_ids = {message_id for (message_id,) in tombstoned_rows}
 
         if next_id:
             self.message_id = int(next_id[0])
@@ -652,17 +663,13 @@ class MemoryStore:
 
     def _init_state_db(self):
         with sqlite3.connect(self.state_db) as conn:
+            self._create_messages_table(conn)
+            self._migrate_message_uniqueness(conn)
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS messages (
-                    message_id INTEGER PRIMARY KEY,
-                    role TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    tombstoned INTEGER NOT NULL DEFAULT 0,
-                    UNIQUE(role, content_hash)
-                )
+                CREATE UNIQUE INDEX IF NOT EXISTS messages_active_hash
+                ON messages(role, content_hash)
+                WHERE tombstoned = 0
                 """
             )
             conn.execute(
@@ -673,6 +680,41 @@ class MemoryStore:
                 )
                 """
             )
+
+    def _create_messages_table(self, conn):
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS messages (
+                message_id INTEGER PRIMARY KEY,
+                role TEXT NOT NULL,
+                text TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                tombstoned INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+
+    def _migrate_message_uniqueness(self, conn):
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
+        ).fetchone()
+        table_sql = row[0] if row else ""
+        if "UNIQUE(role,content_hash)" not in table_sql.replace(" ", ""):
+            return
+
+        conn.execute("ALTER TABLE messages RENAME TO messages_old_unique")
+        self._create_messages_table(conn)
+        conn.execute(
+            """
+            INSERT INTO messages(
+                message_id, role, text, content_hash, created_at, tombstoned
+            )
+            SELECT message_id, role, text, content_hash, created_at, tombstoned
+            FROM messages_old_unique
+            """
+        )
+        conn.execute("DROP TABLE messages_old_unique")
 
     def _migrate_json_state(self):
         if not self.state_file.exists():
@@ -734,17 +776,23 @@ class MemoryStore:
         return datetime.now(timezone.utc).isoformat()
 
     def _log_event(self, event: str, **payload):
+        event_id = str(uuid.uuid4())
         record = {
+            "event_id": event_id,
             "ts": self._now_iso(),
             "event": event,
             **payload,
         }
         with self.events_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return event_id
 
     def _content_hash(self, text: str) -> str:
         normalized = re.sub(r"\s+", " ", text.strip())
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    def _is_message_tombstoned(self, message_id: int) -> bool:
+        return message_id in self._tombstoned_message_ids
 
     # ── Write ─────────────────────────────────────────────────────────────────
 
@@ -854,10 +902,10 @@ class MemoryStore:
 
     def retrieve(self, query: str, top_k: int = RETRIEVE_TOP_K) -> list[RetrievedChunk]:
         count = self.collection.count()
-        if count == 0:
+        if count == 0 or top_k <= 0:
             return []
 
-        fetch_k = min(top_k * 2, count)
+        fetch_k = count if self._tombstoned_message_ids else min(top_k * 2, count)
 
         # embedding retrieval
         emb_results = self.collection.query(
@@ -887,8 +935,8 @@ class MemoryStore:
             id: RetrievedChunk(
                 id=id,
                 text=doc,
-                importance=meta.get("importance", 0.5),
-                message_id=meta.get("message_id", meta.get("turn_id", 0)),
+                importance=(meta or {}).get("importance", 0.5),
+                message_id=(meta or {}).get("message_id", (meta or {}).get("turn_id", 0)),
                 score=rrf_scores.get(id, 0.0),
             )
             for id, doc, meta in zip(fetched["ids"], fetched["documents"], fetched["metadatas"])
@@ -897,7 +945,11 @@ class MemoryStore:
         seen, unique = set(), []
         for id in merged_ids:
             chunk = id_to_chunk.get(id)
-            if chunk and chunk.text not in seen:
+            if (
+                chunk
+                and not self._is_message_tombstoned(chunk.message_id)
+                and chunk.text not in seen
+            ):
                 seen.add(chunk.text)
                 unique.append(chunk)
             if len(unique) == top_k:
@@ -937,9 +989,7 @@ class MemoryStore:
         query: str | None = None,
         confirm: bool = False,
         sample_limit: int = 50,
-    ) -> ForgetPreview:
-        if confirm:
-            raise NotImplementedError("confirm=True tombstoning is not implemented yet")
+    ) -> ForgetPreview | ForgetResult:
         if before is not None:
             raise NotImplementedError("forget(before=...) is not implemented yet")
         if query is not None:
@@ -948,6 +998,58 @@ class MemoryStore:
             raise ValueError("forget requires message_ids for now")
 
         selected_ids = set(message_ids)
+        preview = self._build_forget_preview(selected_ids, sample_limit)
+        if not confirm:
+            return preview
+
+        matched_messages = [
+            message for message in self.raw_log
+            if message["message_id"] in selected_ids
+        ]
+        matched_message_ids = [message["message_id"] for message in matched_messages]
+        if matched_message_ids:
+            with sqlite3.connect(self.state_db) as conn:
+                conn.executemany(
+                    "UPDATE messages SET tombstoned = 1 WHERE message_id = ?",
+                    [(message_id,) for message_id in matched_message_ids],
+                )
+            self._tombstoned_message_ids.update(matched_message_ids)
+            matched_id_set = set(matched_message_ids)
+            self.raw_log = [
+                message for message in self.raw_log
+                if message["message_id"] not in matched_id_set
+            ]
+            for message in matched_messages:
+                self._message_hashes.pop(
+                    (message["role"], message["content_hash"]),
+                    None,
+                )
+
+        event_id = self._log_event(
+            "memory_tombstoned",
+            message_ids=matched_message_ids,
+            message_count=preview.message_count,
+            chunk_count=preview.chunk_count,
+            structured_count=preview.structured_count,
+            ledger_count=preview.ledger_count,
+        )
+        return ForgetResult(
+            messages=preview.messages,
+            chunks=preview.chunks,
+            structured=preview.structured,
+            ledger_entries=preview.ledger_entries,
+            message_count=preview.message_count,
+            chunk_count=preview.chunk_count,
+            structured_count=preview.structured_count,
+            ledger_count=preview.ledger_count,
+            truncated=preview.truncated,
+            tombstoned_count=len(matched_message_ids),
+            event_id=event_id,
+        )
+
+    def _build_forget_preview(
+        self, selected_ids: set[int], sample_limit: int
+    ) -> ForgetPreview:
         messages = [
             MessageRecord(
                 role=message["role"],
@@ -963,10 +1065,12 @@ class MemoryStore:
         structured = [
             obj for obj in self.structured.objects.values()
             if obj.message_id in selected_ids
+            and not self._is_message_tombstoned(obj.message_id)
         ]
         ledger_entries = [
             entry for entry in self.ledger.entries
             if entry.message_id in selected_ids
+            and not self._is_message_tombstoned(entry.message_id)
         ]
 
         limit = max(sample_limit, 0)
@@ -996,7 +1100,7 @@ class MemoryStore:
         ):
             metadata = metadata or {}
             message_id = metadata.get("message_id", metadata.get("turn_id", 0))
-            if message_id not in message_ids:
+            if message_id not in message_ids or self._is_message_tombstoned(message_id):
                 continue
             chunks.append(
                 RetrievedChunk(
@@ -1011,7 +1115,13 @@ class MemoryStore:
     def retrieve_structured(
         self, query: str, top_k: int = STRUCTURED_TOP_K
     ) -> list[StructuredMemoryObject]:
-        return self.structured.search(query, top_k=top_k)
+        if top_k <= 0:
+            return []
+        fetch_k = len(self.structured) if self._tombstoned_message_ids else top_k
+        return [
+            obj for obj in self.structured.search(query, top_k=fetch_k)
+            if not self._is_message_tombstoned(obj.message_id)
+        ][:top_k]
 
     # ── Context builder ───────────────────────────────────────────────────────
 
@@ -1036,13 +1146,19 @@ class MemoryStore:
 
         ledger_recovered = []
         if self.ledger.looks_like_missing_context(user_message) and len(self.ledger) > 0:
-            for entry in self.ledger.search(user_message, top_k=2):
-                if entry.text not in recent_texts:
+            ledger_top_k = len(self.ledger.entries) if self._tombstoned_message_ids else 2
+            for entry in self.ledger.search(user_message, top_k=ledger_top_k):
+                if (
+                    not self._is_message_tombstoned(entry.message_id)
+                    and entry.text not in recent_texts
+                ):
                     ledger_recovered.append(RetrievedChunk(
                         id=entry.chunk_id, text=entry.text,
                         importance=entry.importance, message_id=entry.message_id,
                         score=entry.importance,
                     ))
+                if len(ledger_recovered) == 2:
+                    break
             print(f"  [ledger recovery] searched archived chunks")
 
         budget = CONTEXT_TOKEN_BUDGET

@@ -7,14 +7,16 @@ Run:
 """
 import json
 import shutil
+import sqlite3
 from pathlib import Path
 
 from ragmemory.memory import MemoryStore
 
 DB_PATH = Path("./.data/chroma_sqlite_state_test")
 MIGRATION_DB_PATH = Path("./.data/chroma_state_migration_test")
+UNIQUE_DB_PATH = Path("./.data/chroma_state_unique_migration_test")
 
-for path in (DB_PATH, MIGRATION_DB_PATH):
+for path in (DB_PATH, MIGRATION_DB_PATH, UNIQUE_DB_PATH):
     if path.exists():
         shutil.rmtree(path)
 
@@ -70,5 +72,40 @@ migrated_duplicate = migrated.add_message(
 )
 assert migrated_duplicate.deduped is True
 assert migrated_duplicate.message_id == 0
+
+UNIQUE_DB_PATH.mkdir(parents=True)
+with sqlite3.connect(UNIQUE_DB_PATH / "state.sqlite") as conn:
+    conn.execute(
+        """
+        CREATE TABLE messages (
+            message_id INTEGER PRIMARY KEY,
+            role TEXT NOT NULL,
+            text TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            tombstoned INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(role, content_hash)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO messages(
+            message_id, role, text, content_hash, created_at, tombstoned
+        ) VALUES (0, 'user', 'old tombstone', 'samehash', '2026-01-01T00:00:00Z', 1)
+        """
+    )
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute("INSERT INTO meta(key, value) VALUES('next_message_id', '1')")
+
+unique_migrated = MemoryStore(db_path=str(UNIQUE_DB_PATH))
+with sqlite3.connect(unique_migrated.state_db) as conn:
+    conn.execute(
+        """
+        INSERT INTO messages(
+            message_id, role, text, content_hash, created_at, tombstoned
+        ) VALUES (1, 'user', 'new active', 'samehash', '2026-01-02T00:00:00Z', 0)
+        """
+    )
 
 print("SQLite state test passed.")
