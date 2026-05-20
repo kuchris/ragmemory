@@ -86,6 +86,7 @@ Configs, tables, Mermaid diagrams, and code blocks are detected by code when pos
 | `tests/test_dedup.py` | Normalized duplicate-message skip test. |
 | `tests/test_sqlite_state.py` | SQLite raw-message state and legacy import test. |
 | `tests/test_golden_retrieval.py` | Fixed corpus retrieval regression test. |
+| `tests/test_exact_artifacts.py` | Deterministic exact artifact extraction test. |
 | `tests/test_structured_memory.py` | NVIDIA-backed structured extraction test. |
 | `tests/test_ledger_drop.py` | Forced context-budget drop test. |
 | `ragm_mcp/hooks/` | Codex hook scripts and install notes for automatic memory. |
