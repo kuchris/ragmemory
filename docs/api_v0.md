@@ -13,9 +13,9 @@ depending on internal storage details.
 The public library surface should be:
 
 ```python
-store.add_message(role, text, *, metadata=None) -> AddMessageResult
-store.build_context_bundle(query, *, filters=None) -> ContextBundle
-store.search(query, *, filters=None, top_k=None) -> list[SearchResult]
+store.add_message(role, text, *, extract_structured=True) -> AddMessageResult
+store.build_context_bundle(query) -> ContextBundle
+store.search(query, top_k=None) -> list[SearchResult]
 store.forget(*, query=None, before=None, message_ids=None, confirm=False) -> ForgetPreview | ForgetResult
 ```
 
@@ -44,7 +44,7 @@ library contract.
 ## add_message
 
 ```python
-store.add_message(role, text, *, metadata=None) -> AddMessageResult
+store.add_message(role, text, *, extract_structured=True) -> AddMessageResult
 ```
 
 Adds one user, assistant, or document message to memory.
@@ -70,12 +70,12 @@ Rules:
 - If a message is deduped, return `saved=False`, `deduped=True`, and the hash.
 - The method should return before slow background structured extraction when
   background mode exists.
-- `metadata` is caller-provided context, not a dumping ground for internal state.
+- Caller-provided metadata is reserved for a later API revision.
 
 ## build_context_bundle
 
 ```python
-store.build_context_bundle(query, *, filters=None) -> ContextBundle
+store.build_context_bundle(query) -> ContextBundle
 ```
 
 Builds the memory bundle for a user query.
@@ -108,7 +108,7 @@ Rules:
 ## search
 
 ```python
-store.search(query, *, filters=None, top_k=None) -> list[SearchResult]
+store.search(query, top_k=None) -> list[SearchResult]
 ```
 
 Searches memory without constructing a prompt context.
@@ -196,6 +196,15 @@ These are internal and may change without breaking the v0 API:
 - Structured extraction prompts and models.
 - Prompt formatting.
 - Ledger storage layout.
+
+## Reserved Later
+
+These ideas are intentionally not part of the current implemented API:
+
+- `filters` on `build_context_bundle` and `search`.
+- Caller-provided metadata on `add_message`.
+- Semantic `forget(query=...)`.
+- Background structured extraction jobs.
 
 ## MCP Mapping
 
