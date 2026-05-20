@@ -497,6 +497,7 @@ class MemoryStore:
         self.db_path.mkdir(parents=True, exist_ok=True)
         self.state_db = self.db_path / "state.sqlite"
         self.state_file = self.db_path / "state.json"
+        self.events_file = self.db_path / "events.jsonl"
 
         print("Loading embedding model...")
         self.embed_fn = DefaultEmbeddingFunction()
@@ -659,6 +660,15 @@ class MemoryStore:
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    def _log_event(self, event: str, **payload):
+        record = {
+            "ts": self._now_iso(),
+            "event": event,
+            **payload,
+        }
+        with self.events_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
     def _content_hash(self, text: str) -> str:
         normalized = re.sub(r"\s+", " ", text.strip())
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
@@ -671,6 +681,12 @@ class MemoryStore:
         if dedup_key in self._message_hashes:
             message_id = self._message_hashes[dedup_key]
             print(f"  [dedup skipped] message_id={message_id}")
+            self._log_event(
+                "message_deduped",
+                role=role,
+                message_id=message_id,
+                content_hash=content_hash,
+            )
             return AddMessageResult(
                 saved=False,
                 deduped=True,
@@ -695,6 +711,14 @@ class MemoryStore:
             self._persist_message(self.raw_log[-1])
             self.message_id += 1
             self._save_state()
+            self._log_event(
+                "message_saved",
+                role=role,
+                message_id=message_id,
+                content_hash=content_hash,
+                chunk_ids=[],
+                structured_object_ids=[],
+            )
             return AddMessageResult(
                 saved=True,
                 deduped=False,
@@ -735,6 +759,14 @@ class MemoryStore:
         self._persist_message(self.raw_log[-1])
         self.message_id += 1
         self._save_state()
+        self._log_event(
+            "message_saved",
+            role=role,
+            message_id=message_id,
+            content_hash=content_hash,
+            chunk_ids=[c.id for c in chunks],
+            structured_object_ids=[obj.id for obj in structured],
+        )
         return AddMessageResult(
             saved=True,
             deduped=False,
@@ -797,6 +829,14 @@ class MemoryStore:
                 unique.append(chunk)
             if len(unique) == top_k:
                 break
+        self._log_event(
+            "chunks_retrieved",
+            query=query,
+            result_count=len(unique),
+            chunk_ids=[chunk.id for chunk in unique],
+            scores=[round(chunk.score, 6) for chunk in unique],
+            message_ids=[chunk.message_id for chunk in unique],
+        )
         return unique
 
     def retrieve_structured(
@@ -843,6 +883,13 @@ class MemoryStore:
 
         if dropped:
             print(f"  [compression] kept {len(kept)}, dropped {len(dropped)} to ledger")
+            self._log_event(
+                "chunks_dropped_to_ledger",
+                query=user_message,
+                chunk_ids=[chunk.id for chunk in dropped],
+                message_ids=[chunk.message_id for chunk in dropped],
+                reason="budget",
+            )
 
         parts = []
         if structured:
@@ -855,7 +902,17 @@ class MemoryStore:
             lines = "\n".join(f"{m['role'].upper()}: {m['text']}" for m in recent)
             parts.append("=== Recent Conversation ===\n" + lines)
 
-        return "\n\n".join(parts)
+        context = "\n\n".join(parts)
+        self._log_event(
+            "context_built",
+            query=user_message,
+            structured_count=len(structured),
+            retrieved_count=len(retrieved),
+            kept_count=len(kept),
+            dropped_count=len(dropped),
+            recent_count=len(recent),
+        )
+        return context
 
     def _format_structured(self, obj: StructuredMemoryObject) -> str:
         tags = ", ".join(obj.tags)
