@@ -36,10 +36,11 @@ def main() -> None:
     root = Path.cwd()
     sys.path.insert(0, str(root))
 
-    from ragm_mcp.server import build_recall_context, save_user_message
+    from ragm_mcp.server import build_recall_context, export_obsidian_mirror, save_user_message
 
     context = build_recall_context(prompt)
     save_user_message(prompt, extract_structured=False)
+    export_obsidian_mirror()
     if context:
         sys.stdout.write(json.dumps({
             "hookSpecificOutput": {

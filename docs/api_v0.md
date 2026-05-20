@@ -232,6 +232,8 @@ The MCP server may keep a simple tool interface:
 recall(user_message)
 save(summary)
 remember_document(text)
+forget_preview(message_ids="", before="")
+forget_confirm(message_ids="", before="")
 memory_stats()
 ```
 
@@ -241,6 +243,9 @@ Internally, those tools should call the public library API:
   `format_for_prompt`.
 - `save` calls `add_message`.
 - `remember_document` calls `add_message` or a document-specific wrapper.
+- `forget_preview` calls `forget(confirm=False)` and returns a capped sample plus
+  total counts.
+- `forget_confirm` calls `forget(confirm=True)` after explicit user approval.
 - `memory_stats` reads storage/index statistics.
 
 The MCP response can remain a string, but the library should not be string-only.

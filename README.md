@@ -83,6 +83,7 @@ Configs, tables, Mermaid diagrams, and code blocks are detected by code when pos
 | `scripts/ask_memory.py` | Prints retrieved context for preset questions. |
 | `scripts/view_chunks.py` | Shows raw Chroma chunks. |
 | `scripts/inspect_events.py` | Filters the JSONL event log. |
+| `scripts/export_obsidian.py` | Exports a generated Markdown mirror for Obsidian. |
 | `tests/test_memory.py` | Basic raw retrieval behavior test. |
 | `tests/test_bm25_lazy_rebuild.py` | BM25 lazy rebuild behavior test. |
 | `tests/test_dedup.py` | Normalized duplicate-message skip test. |
@@ -92,7 +93,10 @@ Configs, tables, Mermaid diagrams, and code blocks are detected by code when pos
 | `tests/test_background_extraction.py` | In-process background structured extraction test. |
 | `tests/test_chat_background_extraction.py` | CLI chat background extraction wiring test. |
 | `tests/test_inspect_events.py` | Event log inspector script test. |
+| `tests/test_export_obsidian.py` | Obsidian mirror export test. |
 | `tests/test_ragm_mcp_root_adapter.py` | MCP/hooks root API adapter test. |
+| `tests/test_ragm_mcp_forget_tools.py` | MCP forget preview/confirm wrapper test. |
+| `tests/test_ragm_mcp_obsidian_export.py` | MCP-triggered Obsidian mirror export test. |
 | `tests/test_context_bundle.py` | Structured context bundle and wrapper compatibility test. |
 | `tests/test_search_api.py` | Public search result API test. |
 | `tests/test_forget_preview.py` | Preview-only forget API test. |
@@ -178,6 +182,21 @@ uv run python scripts/inspect_events.py --db-path ./.data/chroma_structured_test
 uv run python scripts/inspect_events.py --event memory_tombstoned
 uv run python scripts/inspect_events.py --message-id 12 --json
 ```
+
+Export a generated Obsidian-readable Markdown mirror:
+
+```powershell
+uv run python scripts/export_obsidian.py --db-path ./.data/chroma_db --output ./.data/obsidian_memory
+```
+
+The mirror is a one-way projection. Edit RagMemory, not the generated Markdown.
+Active records are written under `active/`; tombstoned records are written under
+`forgotten/`. Message notes include previous/next links across the full message
+history, and `maps/` contains active-only timeline pages plus a simple turns
+view.
+
+The MCP adapter also updates this mirror after memory writes. Override the
+output path with `RAGMEMORY_OBSIDIAN_PATH`.
 
 ## Backup
 

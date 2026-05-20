@@ -33,6 +33,8 @@ user message
 | `recall(user_message)` | Call at turn start. Retrieves context, then stores the user message. |
 | `save(summary)` | Call at turn end. Stores a short assistant summary and runs one pending extraction job. |
 | `remember_document(text)` | Stores a large document or paste, split into chunks. |
+| `forget_preview(message_ids, before)` | Shows records that would be tombstoned. `message_ids` is comma/space separated; `before` is an ingest-time cutoff. |
+| `forget_confirm(message_ids, before)` | Tombstones records after previewing with the same selector. |
 | `memory_stats()` | Shows DB path, chunk count, message count, structured count, pending jobs, and ledger size. |
 
 ## Setup
@@ -68,6 +70,19 @@ Data is stored in the root `.data/chroma_db/` directory unless
 - `.data/chroma_db/ledger.json` - removal ledger
 - `.data/chroma_db/structured_memory.jsonl` - structured memory objects
 - `.data/chroma_db/events.jsonl` - JSONL event log
+
+Obsidian mirror:
+
+```bash
+uv run python scripts/export_obsidian.py --db-path ./.data/chroma_db --output ./.data/obsidian_memory
+```
+
+The MCP adapter updates this mirror after `recall`, `save`,
+`remember_document`, and `forget_confirm`. The mirror is generated and one-way.
+Active records go under `active/`; tombstoned records go under `forgotten/`.
+Message notes include previous/next links, and `maps/` contains active-only
+timeline pages plus a simple turns view. Override the output folder with
+`RAGMEMORY_OBSIDIAN_PATH`.
 
 ## Claude Desktop Config
 
@@ -140,6 +155,7 @@ Every turn:
 1. Call recall(user_message=<user message>) before answering
 2. Call save(summary=<1-2 sentence summary>) after answering
 For large documents: use remember_document(text=<content>)
+For removal: call forget_preview(...) first, then forget_confirm(...) only after explicit user approval
 ```
 
 ## Configuration
@@ -148,6 +164,12 @@ Set the DB path with:
 
 ```bash
 RAGMEMORY_DB_PATH=./.data/chroma_db
+```
+
+Set the Obsidian mirror path with:
+
+```bash
+RAGMEMORY_OBSIDIAN_PATH=./.data/obsidian_memory
 ```
 
 Core retrieval constants live in `src/ragmemory/memory.py`.

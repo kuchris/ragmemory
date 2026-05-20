@@ -16,12 +16,15 @@ import sys
 from pathlib import Path
 
 DB_PATH = Path("./.data/ragm_mcp_root_adapter_test")
+OBSIDIAN_PATH = Path("./.data/ragm_mcp_root_adapter_obsidian_test")
 ROOT = Path.cwd()
 
-if DB_PATH.exists():
-    shutil.rmtree(DB_PATH)
+for path in (DB_PATH, OBSIDIAN_PATH):
+    if path.exists():
+        shutil.rmtree(path)
 
 os.environ["RAGMEMORY_DB_PATH"] = str(DB_PATH)
+os.environ["RAGMEMORY_OBSIDIAN_PATH"] = str(OBSIDIAN_PATH)
 sys.path.insert(0, str(ROOT))
 
 stdout = io.StringIO()
@@ -43,6 +46,7 @@ assert (DB_PATH / "state.sqlite").exists()
 
 env = os.environ.copy()
 env["RAGMEMORY_DB_PATH"] = str(DB_PATH)
+env["RAGMEMORY_OBSIDIAN_PATH"] = str(OBSIDIAN_PATH)
 env["PYTHONUTF8"] = "1"
 env["PYTHONIOENCODING"] = "utf-8"
 
@@ -69,5 +73,8 @@ stop = subprocess.run(
 )
 assert stop.stdout.strip() == "{}"
 assert (DB_PATH / "hook_debug.jsonl").exists()
+assert (OBSIDIAN_PATH / "index.md").exists()
+assert (OBSIDIAN_PATH / "active/messages/msg-000002.md").exists()
+assert (OBSIDIAN_PATH / "active/messages/msg-000003.md").exists()
 
 print("RagM MCP root adapter test passed.")

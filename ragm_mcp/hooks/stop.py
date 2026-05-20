@@ -104,9 +104,10 @@ def main() -> None:
         root = Path.cwd()
         sys.path.insert(0, str(root))
 
-        from ragm_mcp.server import save_assistant_message
+        from ragm_mcp.server import export_obsidian_mirror, save_assistant_message
 
         save_assistant_message(message)
+        export_obsidian_mirror()
 
     write_debug(payload, bool(message))
     sys.stdout.write(json.dumps({}))
