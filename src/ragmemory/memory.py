@@ -120,6 +120,19 @@ class AddMessageResult:
 
 
 @dataclass
+class ForgetPreview:
+    messages: list[MessageRecord]
+    chunks: list[RetrievedChunk]
+    structured: list[StructuredMemoryObject]
+    ledger_entries: list[LedgerEntry]
+    message_count: int
+    chunk_count: int
+    structured_count: int
+    ledger_count: int
+    truncated: bool
+
+
+@dataclass
 class ContextBundle:
     query: str
     recent: list[MessageRecord]
@@ -915,6 +928,85 @@ class MemoryStore:
             )
             for chunk in self.retrieve(query, top_k=limit)
         ]
+
+    def forget(
+        self,
+        *,
+        message_ids: list[int] | None = None,
+        before: str | None = None,
+        query: str | None = None,
+        confirm: bool = False,
+        sample_limit: int = 50,
+    ) -> ForgetPreview:
+        if confirm:
+            raise NotImplementedError("confirm=True tombstoning is not implemented yet")
+        if before is not None:
+            raise NotImplementedError("forget(before=...) is not implemented yet")
+        if query is not None:
+            raise NotImplementedError("forget(query=...) is not implemented yet")
+        if not message_ids:
+            raise ValueError("forget requires message_ids for now")
+
+        selected_ids = set(message_ids)
+        messages = [
+            MessageRecord(
+                role=message["role"],
+                text=message["text"],
+                message_id=message["message_id"],
+                content_hash=message["content_hash"],
+                created_at=message.get("created_at"),
+            )
+            for message in self.raw_log
+            if message["message_id"] in selected_ids
+        ]
+        chunks = self._chunks_for_message_ids(selected_ids)
+        structured = [
+            obj for obj in self.structured.objects.values()
+            if obj.message_id in selected_ids
+        ]
+        ledger_entries = [
+            entry for entry in self.ledger.entries
+            if entry.message_id in selected_ids
+        ]
+
+        limit = max(sample_limit, 0)
+        truncated = any(
+            len(records) > limit
+            for records in (messages, chunks, structured, ledger_entries)
+        )
+        return ForgetPreview(
+            messages=messages[:limit],
+            chunks=chunks[:limit],
+            structured=structured[:limit],
+            ledger_entries=ledger_entries[:limit],
+            message_count=len(messages),
+            chunk_count=len(chunks),
+            structured_count=len(structured),
+            ledger_count=len(ledger_entries),
+            truncated=truncated,
+        )
+
+    def _chunks_for_message_ids(self, message_ids: set[int]) -> list[RetrievedChunk]:
+        if not message_ids or self.collection.count() == 0:
+            return []
+        data = self.collection.get(include=["documents", "metadatas"])
+        chunks = []
+        for chunk_id, text, metadata in zip(
+            data["ids"], data["documents"], data["metadatas"]
+        ):
+            metadata = metadata or {}
+            message_id = metadata.get("message_id", metadata.get("turn_id", 0))
+            if message_id not in message_ids:
+                continue
+            chunks.append(
+                RetrievedChunk(
+                    id=chunk_id,
+                    text=text,
+                    importance=metadata.get("importance", 0.5),
+                    message_id=message_id,
+                )
+            )
+        return chunks
 
     def retrieve_structured(
         self, query: str, top_k: int = STRUCTURED_TOP_K

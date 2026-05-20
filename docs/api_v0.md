@@ -154,11 +154,15 @@ Expected return shape:
 ```python
 @dataclass
 class ForgetPreview:
-    matched_messages: list[MessageRecord]
-    matched_chunks: list[ChunkRecord]
-    matched_structured: list[StructuredMemoryRecord]
-    matched_ledger_entries: list[LedgerRecord]
-    would_tombstone_count: int
+    messages: list[MessageRecord]
+    chunks: list[ChunkRecord]
+    structured: list[StructuredMemoryRecord]
+    ledger_entries: list[LedgerRecord]
+    message_count: int
+    chunk_count: int
+    structured_count: int
+    ledger_count: int
+    truncated: bool
 
 @dataclass
 class ForgetResult(ForgetPreview):
@@ -168,6 +172,9 @@ class ForgetResult(ForgetPreview):
 
 Rules:
 
+- The first implementation supports `message_ids` only; `before` and `query`
+  are reserved selectors.
+- Preview record lists may be capped, but counts should reflect total matches.
 - At least one selector is required: `query`, `before`, or `message_ids`.
 - Forgetting a message should cascade logically to its chunks, structured
   objects, and ledger entries.

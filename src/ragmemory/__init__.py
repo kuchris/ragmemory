@@ -3,6 +3,7 @@
 from .memory import (
     AddMessageResult,
     ContextBundle,
+    ForgetPreview,
     MemoryStore,
     SearchResult,
     format_for_prompt,
@@ -11,6 +12,7 @@ from .memory import (
 __all__ = [
     "AddMessageResult",
     "ContextBundle",
+    "ForgetPreview",
     "MemoryStore",
     "SearchResult",
     "format_for_prompt",
