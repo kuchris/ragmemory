@@ -83,6 +83,7 @@ Configs, tables, Mermaid diagrams, and code blocks are detected by code when pos
 | `scripts/ask_memory.py` | Prints retrieved context for preset questions. |
 | `scripts/view_chunks.py` | Shows raw Chroma chunks. |
 | `tests/test_memory.py` | Basic raw retrieval behavior test. |
+| `tests/test_bm25_lazy_rebuild.py` | BM25 lazy rebuild behavior test. |
 | `tests/test_dedup.py` | Normalized duplicate-message skip test. |
 | `tests/test_sqlite_state.py` | SQLite raw-message state and legacy import test. |
 | `tests/test_public_api_signatures.py` | Public API signature contract test. |
