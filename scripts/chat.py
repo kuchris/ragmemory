@@ -1,7 +1,7 @@
 import os
 
 from openai import OpenAI
-from ragmemory.memory import MemoryStore
+from ragmemory.memory import MemoryStore, format_for_prompt
 
 # MODEL = "meta/llama-3.1-8b-instruct"
 # API_KEY_ENV = "NVIDIA_API_KEY"
@@ -54,7 +54,9 @@ def chat():
         if not user_input or user_input.lower() == "quit":
             break
 
-        context = memory.build_context(user_input)
+        context_bundle = memory.build_context_bundle(user_input)
+        memory.commit_drops(context_bundle)
+        context = format_for_prompt(context_bundle)
         response = call_model(context, user_input)
 
         memory.add_message("user", user_input, extract_structured=False)

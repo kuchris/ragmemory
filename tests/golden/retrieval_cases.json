@@ -22,7 +22,7 @@
     },
     {
       "role": "user",
-      "text": "API contract rule: build_context should return a ContextBundle, and format_for_prompt should create the prompt string."
+      "text": "API contract rule: build_context_bundle should return a ContextBundle, and format_for_prompt should create the prompt string."
     },
     {
       "role": "assistant",

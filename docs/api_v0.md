@@ -14,7 +14,7 @@ The public library surface should be:
 
 ```python
 store.add_message(role, text, *, metadata=None) -> AddMessageResult
-store.build_context(query, *, filters=None) -> ContextBundle
+store.build_context_bundle(query, *, filters=None) -> ContextBundle
 store.search(query, *, filters=None, top_k=None) -> list[SearchResult]
 store.forget(*, query=None, before=None, message_ids=None, confirm=False) -> ForgetPreview | ForgetResult
 ```
@@ -24,6 +24,10 @@ Prompt formatting is separate:
 ```python
 format_for_prompt(context: ContextBundle) -> str
 ```
+
+The old `build_context(query) -> str` wrapper is deprecated. It remains for
+compatibility and should call `build_context_bundle`, `commit_drops`, and
+`format_for_prompt`.
 
 MCP tools may wrap these methods, but they should not become the internal
 library contract.
@@ -68,10 +72,10 @@ Rules:
   background mode exists.
 - `metadata` is caller-provided context, not a dumping ground for internal state.
 
-## build_context
+## build_context_bundle
 
 ```python
-store.build_context(query, *, filters=None) -> ContextBundle
+store.build_context_bundle(query, *, filters=None) -> ContextBundle
 ```
 
 Builds the memory bundle for a user query.
@@ -84,11 +88,12 @@ class ContextBundle:
     query: str
     recent: list[MessageRecord]
     structured: list[StructuredMemoryRecord]
-    retrieved_chunks: list[ChunkRecord]
-    ledger_recovered: list[LedgerRecord]
-    kept: list[ContextItem]
-    dropped: list[ContextItem]
-    stats: ContextStats
+    retrieved: list[ChunkRecord]
+    ledger_recovered: list[ChunkRecord]
+    kept: list[ChunkRecord]
+    would_be_dropped: list[ChunkRecord]
+    token_budget: int
+    tokens_used: int
 ```
 
 Rules:
@@ -97,6 +102,8 @@ Rules:
 - The bundle should preserve enough metadata to explain why each item appeared.
 - Prompt text should be produced by `format_for_prompt(context)`.
 - Dropped items should be visible in the bundle and event log.
+- Building a bundle should not mutate the ledger. Call `commit_drops(bundle)`
+  when the caller wants to persist budget drops.
 
 ## search
 
@@ -193,7 +200,8 @@ memory_stats()
 
 Internally, those tools should call the public library API:
 
-- `recall` calls `add_message` and `build_context`, then formats the context.
+- `recall` calls `add_message`, `build_context_bundle`, `commit_drops`, and
+  `format_for_prompt`.
 - `save` calls `add_message`.
 - `remember_document` calls `add_message` or a document-specific wrapper.
 - `memory_stats` reads storage/index statistics.
@@ -208,4 +216,3 @@ The MCP response can remain a string, but the library should not be string-only.
 - Should tombstones be compacted manually only, or by an explicit retention
   policy later?
 - What is the first stable storage version number?
-

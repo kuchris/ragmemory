@@ -44,7 +44,10 @@ try:
     assert memory.score_importance("critical important warning bug") == 0.5
     assert memory.score_importance("plain note") == 0.5
 
-    context = store.build_context("retrieval winner")
+    bundle = store.build_context_bundle("retrieval winner")
+    assert len(store.ledger) == 0
+    store.commit_drops(bundle)
+    context = memory.format_for_prompt(bundle)
     assert "HIGH_SCORE" in context
     assert "LOW_SCORE" not in context
     assert len(store.ledger) == 1

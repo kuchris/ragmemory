@@ -86,6 +86,7 @@ Configs, tables, Mermaid diagrams, and code blocks are detected by code when pos
 | `tests/test_dedup.py` | Normalized duplicate-message skip test. |
 | `tests/test_sqlite_state.py` | SQLite raw-message state and legacy import test. |
 | `tests/test_golden_retrieval.py` | Fixed corpus retrieval regression test. |
+| `tests/test_context_bundle.py` | Structured context bundle and wrapper compatibility test. |
 | `tests/test_exact_artifacts.py` | Deterministic exact artifact extraction test. |
 | `tests/test_importance_policy.py` | Retrieval-score context budget policy test. |
 | `tests/test_event_log.py` | JSONL observability event log test. |

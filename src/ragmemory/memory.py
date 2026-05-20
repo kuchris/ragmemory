@@ -68,6 +68,15 @@ class RetrievedChunk:
 
 
 @dataclass
+class MessageRecord:
+    role: str
+    text: str
+    message_id: int
+    content_hash: str
+    created_at: str | None = None
+
+
+@dataclass
 class LedgerEntry:
     chunk_id: str
     text: str
@@ -97,6 +106,45 @@ class AddMessageResult:
     chunk_ids: list[str]
     structured_object_ids: list[str]
     queued_job_ids: list[str]
+
+
+@dataclass
+class ContextBundle:
+    query: str
+    recent: list[MessageRecord]
+    structured: list[StructuredMemoryObject]
+    retrieved: list[RetrievedChunk]
+    ledger_recovered: list[RetrievedChunk]
+    kept: list[RetrievedChunk]
+    would_be_dropped: list[RetrievedChunk]
+    token_budget: int
+    tokens_used: int
+
+
+def format_for_prompt(bundle: ContextBundle) -> str:
+    parts = []
+    if bundle.structured:
+        parts.append("=== Structured Memory ===\n" + "\n---\n".join(
+            _format_structured_object(obj) for obj in bundle.structured
+        ))
+    if bundle.kept:
+        parts.append("=== Relevant Memory ===\n" + "\n---\n".join(
+            chunk.text for chunk in bundle.kept
+        ))
+    if bundle.recent:
+        lines = "\n".join(f"{message.role.upper()}: {message.text}" for message in bundle.recent)
+        parts.append("=== Recent Conversation ===\n" + lines)
+    return "\n\n".join(parts)
+
+
+def _format_structured_object(obj: StructuredMemoryObject) -> str:
+    tags = ", ".join(obj.tags)
+    return (
+        f"[{obj.type} | importance={obj.importance} | message_id={obj.message_id}]\n"
+        f"Summary: {obj.summary}\n"
+        f"Tags: {tags}\n"
+        f"Source: {obj.source_text}"
+    )
 
 
 # ── BM25 index ────────────────────────────────────────────────────────────────
@@ -531,7 +579,7 @@ class MemoryStore:
         with sqlite3.connect(self.state_db) as conn:
             rows = conn.execute(
                 """
-                SELECT message_id, role, text, content_hash
+                SELECT message_id, role, text, content_hash, created_at
                 FROM messages
                 WHERE tombstoned = 0
                 ORDER BY message_id
@@ -543,8 +591,9 @@ class MemoryStore:
                     "text": text,
                     "message_id": message_id,
                     "content_hash": content_hash,
+                    "created_at": created_at,
                 }
-                for message_id, role, text, content_hash in rows
+                for message_id, role, text, content_hash, created_at in rows
             ]
             next_id = conn.execute(
                 "SELECT value FROM meta WHERE key = 'next_message_id'"
@@ -849,79 +898,91 @@ class MemoryStore:
     def _estimate_tokens(self, text: str) -> int:
         return len(text) // 4
 
-    def build_context(self, user_message: str) -> str:
-        recent = self.raw_log[-RECENT_MESSAGES:] if RECENT_MESSAGES > 0 else []
-        recent_texts = {m["text"] for m in recent}
+    def build_context_bundle(self, user_message: str) -> ContextBundle:
+        recent = [
+            MessageRecord(
+                role=message["role"],
+                text=message["text"],
+                message_id=message["message_id"],
+                content_hash=message["content_hash"],
+                created_at=message.get("created_at"),
+            )
+            for message in (self.raw_log[-RECENT_MESSAGES:] if RECENT_MESSAGES > 0 else [])
+        ]
+        recent_texts = {message.text for message in recent}
 
         structured = self.retrieve_structured(user_message)
-        retrieved = [r for r in self.retrieve(user_message) if r.text not in recent_texts]
+        retrieved = [chunk for chunk in self.retrieve(user_message) if chunk.text not in recent_texts]
 
-        # ledger recovery
+        ledger_recovered = []
         if self.ledger.looks_like_missing_context(user_message) and len(self.ledger) > 0:
             for entry in self.ledger.search(user_message, top_k=2):
                 if entry.text not in recent_texts:
-                    retrieved.append(RetrievedChunk(
+                    ledger_recovered.append(RetrievedChunk(
                         id=entry.chunk_id, text=entry.text,
                         importance=entry.importance, message_id=entry.message_id,
                         score=entry.importance,
                     ))
             print(f"  [ledger recovery] searched archived chunks")
 
-        # compress to budget
         budget = CONTEXT_TOKEN_BUDGET
-        kept, dropped = [], []
-        for chunk in sorted(retrieved, key=lambda c: (-c.score, -c.message_id)):
+        kept, would_be_dropped = [], []
+        for chunk in sorted(retrieved + ledger_recovered, key=lambda c: (-c.score, -c.message_id)):
             tokens = self._estimate_tokens(chunk.text)
             if budget - tokens >= 0:
                 kept.append(chunk)
                 budget -= tokens
             else:
-                dropped.append(chunk)
+                would_be_dropped.append(chunk)
 
-        for chunk in dropped:
-            self.ledger.log(chunk, reason="budget")
-
-        if dropped:
-            print(f"  [compression] kept {len(kept)}, dropped {len(dropped)} to ledger")
-            self._log_event(
-                "chunks_dropped_to_ledger",
-                query=user_message,
-                chunk_ids=[chunk.id for chunk in dropped],
-                message_ids=[chunk.message_id for chunk in dropped],
-                reason="budget",
-            )
-
-        parts = []
-        if structured:
-            parts.append("=== Structured Memory ===\n" + "\n---\n".join(
-                self._format_structured(obj) for obj in structured
-            ))
-        if kept:
-            parts.append("=== Relevant Memory ===\n" + "\n---\n".join(c.text for c in kept))
-        if recent:
-            lines = "\n".join(f"{m['role'].upper()}: {m['text']}" for m in recent)
-            parts.append("=== Recent Conversation ===\n" + lines)
-
-        context = "\n\n".join(parts)
+        bundle = ContextBundle(
+            query=user_message,
+            recent=recent,
+            structured=structured,
+            retrieved=retrieved,
+            ledger_recovered=ledger_recovered,
+            kept=kept,
+            would_be_dropped=would_be_dropped,
+            token_budget=CONTEXT_TOKEN_BUDGET,
+            tokens_used=CONTEXT_TOKEN_BUDGET - budget,
+        )
         self._log_event(
             "context_built",
             query=user_message,
             structured_count=len(structured),
             retrieved_count=len(retrieved),
+            ledger_recovered_count=len(ledger_recovered),
             kept_count=len(kept),
-            dropped_count=len(dropped),
+            dropped_count=len(would_be_dropped),
             recent_count=len(recent),
         )
-        return context
+        return bundle
+
+    def commit_drops(self, bundle: ContextBundle):
+        for chunk in bundle.would_be_dropped:
+            self.ledger.log(chunk, reason="budget")
+
+        if bundle.would_be_dropped:
+            print(
+                f"  [compression] kept {len(bundle.kept)}, "
+                f"dropped {len(bundle.would_be_dropped)} to ledger"
+            )
+            self._log_event(
+                "chunks_dropped_to_ledger",
+                query=bundle.query,
+                chunk_ids=[chunk.id for chunk in bundle.would_be_dropped],
+                message_ids=[chunk.message_id for chunk in bundle.would_be_dropped],
+                reason="budget",
+            )
+
+    def build_context(self, user_message: str) -> str:
+        """Deprecated. Use build_context_bundle + format_for_prompt."""
+        bundle = self.build_context_bundle(user_message)
+        self.commit_drops(bundle)
+        return format_for_prompt(bundle)
 
     def _format_structured(self, obj: StructuredMemoryObject) -> str:
-        tags = ", ".join(obj.tags)
-        return (
-            f"[{obj.type} | importance={obj.importance} | message_id={obj.message_id}]\n"
-            f"Summary: {obj.summary}\n"
-            f"Tags: {tags}\n"
-            f"Source: {obj.source_text}"
-        )
+        return _format_structured_object(obj)
 
     def _duplicates_exact_artifact(
         self, obj: StructuredMemoryObject, exact_sources: set[str]
