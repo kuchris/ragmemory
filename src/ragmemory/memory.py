@@ -68,6 +68,17 @@ class RetrievedChunk:
 
 
 @dataclass
+class SearchResult:
+    item_id: str
+    item_type: str
+    text: str
+    score: float
+    message_id: int | None
+    source: str
+    metadata: dict
+
+
+@dataclass
 class MessageRecord:
     role: str
     text: str
@@ -887,6 +898,23 @@ class MemoryStore:
             message_ids=[chunk.message_id for chunk in unique],
         )
         return unique
+
+    def search(self, query: str, top_k: int | None = None) -> list[SearchResult]:
+        limit = RETRIEVE_TOP_K if top_k is None else top_k
+        if limit <= 0:
+            return []
+        return [
+            SearchResult(
+                item_id=chunk.id,
+                item_type="chunk",
+                text=chunk.text,
+                score=chunk.score,
+                message_id=chunk.message_id,
+                source="raw_chunk",
+                metadata={"importance": chunk.importance},
+            )
+            for chunk in self.retrieve(query, top_k=limit)
+        ]
 
     def retrieve_structured(
         self, query: str, top_k: int = STRUCTURED_TOP_K
