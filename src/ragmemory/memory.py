@@ -985,19 +985,17 @@ class MemoryStore:
         self,
         *,
         message_ids: list[int] | None = None,
-        before: str | None = None,
+        before: str | datetime | None = None,
         query: str | None = None,
         confirm: bool = False,
         sample_limit: int = 50,
     ) -> ForgetPreview | ForgetResult:
-        if before is not None:
-            raise NotImplementedError("forget(before=...) is not implemented yet")
         if query is not None:
             raise NotImplementedError("forget(query=...) is not implemented yet")
-        if not message_ids:
-            raise ValueError("forget requires message_ids for now")
+        if message_ids and before is not None:
+            raise ValueError("forget accepts one selector at a time for now")
 
-        selected_ids = set(message_ids)
+        selected_ids = self._select_forget_message_ids(message_ids, before)
         preview = self._build_forget_preview(selected_ids, sample_limit)
         if not confirm:
             return preview
@@ -1046,6 +1044,32 @@ class MemoryStore:
             tombstoned_count=len(matched_message_ids),
             event_id=event_id,
         )
+
+    def _select_forget_message_ids(
+        self, message_ids: list[int] | None, before: str | datetime | None
+    ) -> set[int]:
+        if message_ids:
+            return set(message_ids)
+        if before is not None:
+            cutoff = self._parse_forget_before(before)
+            return {
+                message["message_id"]
+                for message in self.raw_log
+                if self._parse_forget_before(message["created_at"]) < cutoff
+            }
+        raise ValueError("forget requires message_ids or before for now")
+
+    def _parse_forget_before(self, value: str | datetime) -> datetime:
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            text = value.strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
 
     def _build_forget_preview(
         self, selected_ids: set[int], sample_limit: int

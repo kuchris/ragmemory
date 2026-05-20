@@ -172,8 +172,11 @@ class ForgetResult(ForgetPreview):
 
 Rules:
 
-- The first implementation supports `message_ids` only; `before` and `query`
-  are reserved selectors.
+- The current implementation supports `message_ids` and `before`.
+- `before` means message `created_at` ingest time; records strictly older than
+  the cutoff match.
+- `query` is a reserved selector.
+- Passing multiple selectors together is reserved for a later decision.
 - Preview record lists may be capped, but counts should reflect total matches.
 - At least one selector is required: `query`, `before`, or `message_ids`.
 - Forgetting a message should cascade logically to its chunks, structured

@@ -79,10 +79,4 @@ try:
 except NotImplementedError:
     pass
 
-try:
-    store.forget(before="2026-01-01T00:00:00Z")
-    raise AssertionError("before selector should not be implemented yet")
-except NotImplementedError:
-    pass
-
 print("Forget preview test passed.")
