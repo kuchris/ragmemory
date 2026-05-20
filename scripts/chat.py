@@ -59,10 +59,11 @@ def chat():
         context = format_for_prompt(context_bundle)
         response = call_model(context, user_input)
 
-        memory.add_message("user", user_input, extract_structured=False)
+        memory.add_message("user", user_input, extract_structured="background")
         memory.add_message("assistant", response, extract_structured=False)
 
         print(f"Assistant: {response}\n")
+        memory.run_pending_extractions(limit=1)
 
 
 if __name__ == "__main__":
