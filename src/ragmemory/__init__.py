@@ -1,5 +1,5 @@
 """RagMemory package."""
 
-from .memory import MemoryStore
+from .memory import AddMessageResult, MemoryStore
 
-__all__ = ["MemoryStore"]
+__all__ = ["AddMessageResult", "MemoryStore"]

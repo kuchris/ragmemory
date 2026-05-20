@@ -2,6 +2,7 @@ import os
 import re
 import uuid
 import json
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 import chromadb
@@ -91,6 +92,17 @@ class StructuredMemoryObject:
     importance: float
     message_id: int
     role: str
+
+
+@dataclass
+class AddMessageResult:
+    saved: bool
+    deduped: bool
+    message_id: int | None
+    content_hash: str
+    chunk_ids: list[str]
+    structured_object_ids: list[str]
+    queued_job_ids: list[str]
 
 
 # ── BM25 index ────────────────────────────────────────────────────────────────
@@ -509,6 +521,7 @@ class MemoryStore:
         self.structured_extractor = StructuredMemoryExtractor()
         self.bm25 = BM25Index()
         self.raw_log: list[dict] = []
+        self._message_hashes: dict[tuple[str, str], int] = {}
         self.message_id = 0
 
         self._load_state()
@@ -520,6 +533,14 @@ class MemoryStore:
             data = json.loads(self.state_file.read_text(encoding="utf-8"))
             self.raw_log = data.get("raw_log", [])
             self.message_id = data.get("message_id", data.get("turn_id", 0))
+            for message in self.raw_log:
+                text = message.get("text", "")
+                role = message.get("role", "")
+                content_hash = message.get("content_hash") or self._content_hash(text)
+                message["content_hash"] = content_hash
+                self._message_hashes[(role, content_hash)] = message.get(
+                    "message_id", message.get("turn_id", 0)
+                )
             print(f"  [restored] {len(self.raw_log)} messages, next message {self.message_id}")
 
         # rebuild BM25 from chromadb (always, since BM25 is in-memory)
@@ -535,15 +556,49 @@ class MemoryStore:
             encoding="utf-8",
         )
 
+    def _content_hash(self, text: str) -> str:
+        normalized = re.sub(r"\s+", " ", text.strip())
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
     # ── Write ─────────────────────────────────────────────────────────────────
 
-    def add_message(self, role: str, text: str, extract_structured: bool = True):
-        self.raw_log.append({"role": role, "text": text, "message_id": self.message_id})
+    def add_message(self, role: str, text: str, extract_structured: bool = True) -> AddMessageResult:
+        content_hash = self._content_hash(text)
+        dedup_key = (role, content_hash)
+        if dedup_key in self._message_hashes:
+            message_id = self._message_hashes[dedup_key]
+            print(f"  [dedup skipped] message_id={message_id}")
+            return AddMessageResult(
+                saved=False,
+                deduped=True,
+                message_id=message_id,
+                content_hash=content_hash,
+                chunk_ids=[],
+                structured_object_ids=[],
+                queued_job_ids=[],
+            )
+
+        message_id = self.message_id
+        self.raw_log.append({
+            "role": role,
+            "text": text,
+            "message_id": message_id,
+            "content_hash": content_hash,
+        })
+        self._message_hashes[dedup_key] = message_id
         chunks = self.chunker.split(text, self.message_id, role)
         if not chunks:
             self.message_id += 1
             self._save_state()
-            return
+            return AddMessageResult(
+                saved=True,
+                deduped=False,
+                message_id=message_id,
+                content_hash=content_hash,
+                chunk_ids=[],
+                structured_object_ids=[],
+                queued_job_ids=[],
+            )
 
         self.collection.add(
             ids=[c.id for c in chunks],
@@ -568,10 +623,21 @@ class MemoryStore:
             self.structured.add_many(structured)
             if structured:
                 print(f"  [structured {len(structured)} object(s) | total: {len(self.structured)}]")
+        else:
+            structured = []
 
         print(f"  [stored {len(chunks)} chunk(s) | total: {self.collection.count()}]")
         self.message_id += 1
         self._save_state()
+        return AddMessageResult(
+            saved=True,
+            deduped=False,
+            message_id=message_id,
+            content_hash=content_hash,
+            chunk_ids=[c.id for c in chunks],
+            structured_object_ids=[obj.id for obj in structured],
+            queued_job_ids=[],
+        )
 
     # ── Retrieval (hybrid BM25 + embeddings via RRF) ──────────────────────────
 

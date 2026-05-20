@@ -83,6 +83,7 @@ Configs, tables, Mermaid diagrams, and code blocks are detected by code when pos
 | `scripts/ask_memory.py` | Prints retrieved context for preset questions. |
 | `scripts/view_chunks.py` | Shows raw Chroma chunks. |
 | `tests/test_memory.py` | Basic raw retrieval behavior test. |
+| `tests/test_dedup.py` | Normalized duplicate-message skip test. |
 | `tests/test_structured_memory.py` | NVIDIA-backed structured extraction test. |
 | `tests/test_ledger_drop.py` | Forced context-budget drop test. |
 | `ragm_mcp/hooks/` | Codex hook scripts and install notes for automatic memory. |
