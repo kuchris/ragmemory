@@ -12,7 +12,7 @@ RagMemory stores memory in layers:
 
 | Layer | Purpose |
 |------|---------|
-| Raw log | Source-of-truth messages in `state.json`. |
+| Raw log | Source-of-truth messages in `state.sqlite`. |
 | Raw chunks | Searchable Chroma chunks for broad recall. |
 | Structured memory | High-signal objects such as decisions, constraints, configs, tables, and open questions. |
 | Recent window | Latest messages included directly for short-term continuity. |
@@ -84,6 +84,7 @@ Configs, tables, Mermaid diagrams, and code blocks are detected by code when pos
 | `scripts/view_chunks.py` | Shows raw Chroma chunks. |
 | `tests/test_memory.py` | Basic raw retrieval behavior test. |
 | `tests/test_dedup.py` | Normalized duplicate-message skip test. |
+| `tests/test_sqlite_state.py` | SQLite raw-message state and legacy import test. |
 | `tests/test_structured_memory.py` | NVIDIA-backed structured extraction test. |
 | `tests/test_ledger_drop.py` | Forced context-budget drop test. |
 | `ragm_mcp/hooks/` | Codex hook scripts and install notes for automatic memory. |

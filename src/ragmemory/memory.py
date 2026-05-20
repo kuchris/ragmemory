@@ -3,7 +3,9 @@ import re
 import uuid
 import json
 import hashlib
+import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 import chromadb
 from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
@@ -500,6 +502,8 @@ class Chunker:
 class MemoryStore:
     def __init__(self, db_path: str = "./.data/chroma_db"):
         self.db_path = Path(db_path)
+        self.db_path.mkdir(parents=True, exist_ok=True)
+        self.state_db = self.db_path / "state.sqlite"
         self.state_file = self.db_path / "state.json"
 
         print("Loading embedding model...")
@@ -529,18 +533,39 @@ class MemoryStore:
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _load_state(self):
-        if self.state_file.exists():
-            data = json.loads(self.state_file.read_text(encoding="utf-8"))
-            self.raw_log = data.get("raw_log", [])
-            self.message_id = data.get("message_id", data.get("turn_id", 0))
-            for message in self.raw_log:
-                text = message.get("text", "")
-                role = message.get("role", "")
-                content_hash = message.get("content_hash") or self._content_hash(text)
-                message["content_hash"] = content_hash
-                self._message_hashes[(role, content_hash)] = message.get(
-                    "message_id", message.get("turn_id", 0)
-                )
+        self._init_state_db()
+        self._migrate_json_state()
+        with sqlite3.connect(self.state_db) as conn:
+            rows = conn.execute(
+                """
+                SELECT message_id, role, text, content_hash
+                FROM messages
+                WHERE tombstoned = 0
+                ORDER BY message_id
+                """
+            ).fetchall()
+            self.raw_log = [
+                {
+                    "role": role,
+                    "text": text,
+                    "message_id": message_id,
+                    "content_hash": content_hash,
+                }
+                for message_id, role, text, content_hash in rows
+            ]
+            next_id = conn.execute(
+                "SELECT value FROM meta WHERE key = 'next_message_id'"
+            ).fetchone()
+
+        for message in self.raw_log:
+            self._message_hashes[(message["role"], message["content_hash"])] = message["message_id"]
+
+        if next_id:
+            self.message_id = int(next_id[0])
+        elif self.raw_log:
+            self.message_id = max(message["message_id"] for message in self.raw_log) + 1
+
+        if self.raw_log:
             print(f"  [restored] {len(self.raw_log)} messages, next message {self.message_id}")
 
         # rebuild BM25 from chromadb (always, since BM25 is in-memory)
@@ -550,11 +575,97 @@ class MemoryStore:
             print(f"  [bm25] rebuilt index with {len(self.bm25)} chunks")
 
     def _save_state(self):
-        self.db_path.mkdir(parents=True, exist_ok=True)
-        self.state_file.write_text(
-            json.dumps({"raw_log": self.raw_log, "message_id": self.message_id}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        with sqlite3.connect(self.state_db) as conn:
+            conn.execute(
+                """
+                INSERT INTO meta(key, value) VALUES('next_message_id', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (str(self.message_id),),
+            )
+
+    def _init_state_db(self):
+        with sqlite3.connect(self.state_db) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS messages (
+                    message_id INTEGER PRIMARY KEY,
+                    role TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    tombstoned INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(role, content_hash)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+
+    def _migrate_json_state(self):
+        if not self.state_file.exists():
+            return
+
+        with sqlite3.connect(self.state_db) as conn:
+            existing = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            if existing:
+                return
+
+            data = json.loads(self.state_file.read_text(encoding="utf-8"))
+            raw_log = data.get("raw_log", [])
+            for index, message in enumerate(raw_log):
+                text = message.get("text", "")
+                role = message.get("role", "")
+                message_id = message.get("message_id", message.get("turn_id", index))
+                content_hash = message.get("content_hash") or self._content_hash(text)
+                created_at = message.get("created_at") or self._now_iso()
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO messages(
+                        message_id, role, text, content_hash, created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (message_id, role, text, content_hash, created_at),
+                )
+
+            next_message_id = data.get("message_id", data.get("turn_id"))
+            if next_message_id is None:
+                next_message_id = max(
+                    [message.get("message_id", message.get("turn_id", -1)) for message in raw_log],
+                    default=-1,
+                ) + 1
+            conn.execute(
+                """
+                INSERT INTO meta(key, value) VALUES('next_message_id', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (str(next_message_id),),
+            )
+
+    def _persist_message(self, message: dict):
+        with sqlite3.connect(self.state_db) as conn:
+            conn.execute(
+                """
+                INSERT INTO messages(message_id, role, text, content_hash, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    message["message_id"],
+                    message["role"],
+                    message["text"],
+                    message["content_hash"],
+                    message["created_at"],
+                ),
+            )
+
+    def _now_iso(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
 
     def _content_hash(self, text: str) -> str:
         normalized = re.sub(r"\s+", " ", text.strip())
@@ -584,10 +695,12 @@ class MemoryStore:
             "text": text,
             "message_id": message_id,
             "content_hash": content_hash,
+            "created_at": self._now_iso(),
         })
         self._message_hashes[dedup_key] = message_id
         chunks = self.chunker.split(text, self.message_id, role)
         if not chunks:
+            self._persist_message(self.raw_log[-1])
             self.message_id += 1
             self._save_state()
             return AddMessageResult(
@@ -627,6 +740,7 @@ class MemoryStore:
             structured = []
 
         print(f"  [stored {len(chunks)} chunk(s) | total: {self.collection.count()}]")
+        self._persist_message(self.raw_log[-1])
         self.message_id += 1
         self._save_state()
         return AddMessageResult(
