@@ -1,44 +1,48 @@
 # ragm-mcp
 
-A RAG memory MCP server that gives any MCP-compatible AI assistant persistent, recoverable memory across sessions.
+A RAG memory MCP server that gives MCP-compatible assistants persistent,
+recoverable memory across sessions.
 
-## How it works
+## How It Works
 
-Each saved message is chunked, embedded, and stored in a local vector database. On every user request, relevant past context is retrieved via hybrid search (embeddings + BM25) and injected into the prompt. Chunks that exceed the token budget are compressed out but logged to a removal ledger -- nothing is permanently lost.
+The MCP adapter uses the root `ragmemory.MemoryStore` package. That means it
+shares the hardened SQLite state, Chroma store, structured context bundle,
+event log, ledger, and recoverable tombstone behavior.
 
-```
+```text
 user message
-    → recall()         hybrid retrieval (embeddings + BM25 via RRF)
-    → context injected into prompt
-    → model answers
-    → save()           summary stored, chunked, indexed
+    -> recall()         retrieve relevant memory
+    -> context injected into prompt
+    -> model answers
+    -> save()           assistant summary stored
 ```
 
-## Memory layers
+## Memory Layers
 
 | Layer | What | When included |
 |-------|------|---------------|
-| Recent window | Last 12 messages verbatim | Always |
-| Retrieved memory | Top-5 semantically relevant chunks | Every user request |
-| Removal ledger | Chunks compressed out of budget | On demand (missing context phrases) |
+| Recent window | Recent messages verbatim | Always |
+| Structured memory | Durable facts and exact artifacts | Every user request |
+| Retrieved memory | Semantically relevant chunks | Every user request |
+| Removal ledger | Chunks dropped from context budget | On missing-context phrases |
 
 ## Tools
 
 | Tool | Description |
 |------|-------------|
-| `recall(user_message)` | Call at turn start. Stores user message, returns relevant memory context. |
-| `save(summary)` | Call at turn end. Store a short summary of your response. |
-| `remember_document(text)` | Store a large document or long paste, split into chunks. |
-| `memory_stats()` | Show chunk count, message count, ledger size. |
+| `recall(user_message)` | Call at turn start. Retrieves context, then stores the user message. |
+| `save(summary)` | Call at turn end. Stores a short assistant summary and runs one pending extraction job. |
+| `remember_document(text)` | Stores a large document or paste, split into chunks. |
+| `memory_stats()` | Shows DB path, chunk count, message count, structured count, pending jobs, and ledger size. |
 
 ## Setup
 
-This subproject uses the master folder `uv` environment. Run commands from the master folder unless noted otherwise.
-
-If you rebuild the master environment, install the MCP runtime dependencies there:
+This subproject uses the master folder `uv` environment. Run commands from the
+master folder unless noted otherwise.
 
 ```bash
 uv venv
+uv pip install -e .
 uv pip install chromadb rank-bm25 mcp
 ```
 
@@ -56,12 +60,16 @@ From inside `ragm_mcp/`:
 uv run --directory .. python ragm_mcp/server.py
 ```
 
-Data is stored in `chroma_db/` next to `server.py`:
-- `chroma_db/` — vector store (ChromaDB)
-- `chroma_db/state.json` — raw message log + next message ID
-- `chroma_db/ledger.json` — removal ledger (persisted across restarts)
+Data is stored in the root `.data/chroma_db/` directory unless
+`RAGMEMORY_DB_PATH` is set:
 
-## Claude Desktop config
+- `.data/chroma_db/chroma.sqlite3` - Chroma vector store
+- `.data/chroma_db/state.sqlite` - raw message log + next message ID
+- `.data/chroma_db/ledger.json` - removal ledger
+- `.data/chroma_db/structured_memory.jsonl` - structured memory objects
+- `.data/chroma_db/events.jsonl` - JSONL event log
+
+## Claude Desktop Config
 
 ```json
 {
@@ -75,10 +83,10 @@ Data is stored in `chroma_db/` next to `server.py`:
 }
 ```
 
-## LM Studio config (`%USERPROFILE%\.lmstudio\mcp.json`)
+## LM Studio Config (`%USERPROFILE%\.lmstudio\mcp.json`)
 
-In LM Studio, open the right sidebar `Program` tab, then choose `Install` -> `Edit mcp.json`.
-Add this server entry under `mcpServers`:
+In LM Studio, open the right sidebar `Program` tab, then choose `Install` ->
+`Edit mcp.json`. Add this server entry under `mcpServers`:
 
 ```json
 {
@@ -92,9 +100,10 @@ Add this server entry under `mcpServers`:
 }
 ```
 
-If LM Studio cannot find `uv`, replace `"command": "uv"` with the full path to `uv.exe`.
+If LM Studio cannot find `uv`, replace `"command": "uv"` with the full path to
+`uv.exe`.
 
-## OpenCode config (`~/.config/opencode/opencode.json`)
+## OpenCode Config (`~/.config/opencode/opencode.json`)
 
 ```json
 {
@@ -109,7 +118,7 @@ If LM Studio cannot find `uv`, replace `"command": "uv"` with the full path to `
 }
 ```
 
-## Codex CLI config (`~/.codex/config.toml`)
+## Codex CLI Config (`~/.codex/config.toml`)
 
 ```toml
 [mcp_servers.rag-memory]
@@ -118,17 +127,15 @@ args = ["run", "python", "ragm_mcp/server.py"]
 cwd = "C:/path/to/master-folder"
 ```
 
-Codex reads `AGENTS.md` from the project root automatically. Copy or symlink `AGENTS.md` into your project directory:
+Codex usually works better with the direct hook setup in
+`ragm_mcp/hooks/README.md`, but the MCP server remains available for clients
+that prefer explicit memory tools.
 
-```bash
-cp C:/path/to/ragm_mcp/AGENTS.md ./AGENTS.md
-```
-
-## Agent instructions (AGENTS.md)
+## Agent Instructions
 
 Add to your agent's system prompt or use the included `AGENTS.md`:
 
-```
+```text
 Every turn:
 1. Call recall(user_message=<user message>) before answering
 2. Call save(summary=<1-2 sentence summary>) after answering
@@ -137,21 +144,20 @@ For large documents: use remember_document(text=<content>)
 
 ## Configuration
 
-Edit the constants at the top of `server.py`:
+Set the DB path with:
 
-| Constant | Default | Description |
-|----------|---------|-------------|
-| `CHUNK_MAX_TOKENS` | 300 | Max tokens per chunk before splitting |
-| `CHUNK_MIN_TOKENS` | 80 | Min tokens before merging with neighbor |
-| `RECENT_MESSAGES` | 12 | How many recent messages to always include verbatim |
-| `RETRIEVE_TOP_K` | 5 | Number of chunks to retrieve per user request |
-| `CONTEXT_TOKEN_BUDGET` | 2000 | Max tokens for retrieved memory in prompt |
+```bash
+RAGMEMORY_DB_PATH=./.data/chroma_db
+```
 
-## Technical details
+Core retrieval constants live in `src/ragmemory/memory.py`.
 
-- **Embeddings**: `all-MiniLM-L6-v2` via ChromaDB's built-in ONNX runtime (no Ollama required)
-- **Vector store**: ChromaDB (persistent, local)
-- **Keyword search**: BM25 (rank-bm25)
-- **Retrieval fusion**: Reciprocal Rank Fusion (RRF) combining embedding + BM25 scores
-- **Importance scoring**: Heuristic (length, signal words, code presence, numbers)
-- **Chunking**: Paragraph-based with header context injection and sentence-level fallback
+## Technical Details
+
+- **Embeddings**: ChromaDB default embedding function
+- **Vector store**: ChromaDB, persistent and local
+- **Raw state**: SQLite
+- **Keyword search**: BM25, rebuilt lazily on search
+- **Retrieval fusion**: Reciprocal Rank Fusion combining embedding + BM25 scores
+- **Context budgeting**: retrieval-score based
+- **Chunking**: paragraph-based with header context injection and sentence fallback

@@ -23,16 +23,20 @@ Do not commit that file. It is machine-local and contains your local checkout pa
 
 - Runs when Codex is about to end its turn.
 - Saves the latest assistant message to RagMemory.
-- Writes a small debug record to `ragm_mcp/chroma_db/hook_debug.jsonl`.
+- Writes a small debug record to `.data/chroma_db/hook_debug.jsonl`.
 
 Both hooks write through the same backend as the MCP server:
 
 ```text
-ragm_mcp/chroma_db/state.json
-ragm_mcp/chroma_db/chroma.sqlite3
+.data/chroma_db/state.sqlite
+.data/chroma_db/chroma.sqlite3
+.data/chroma_db/events.jsonl
 ```
 
-The MCP server does not need to be running for these hook scripts. They import the local `MemoryStore` directly.
+The MCP server does not need to be running for these hook scripts. They import
+the local MCP adapter, which uses the hardened `ragmemory.MemoryStore` package.
+The hook process is short-lived, so Codex hooks save raw memory only; the
+long-running MCP server can use in-process background extraction.
 
 ## Files
 
@@ -95,14 +99,14 @@ Ask Codex any question. At the start of the next turn, you should see injected c
 After Codex answers, check:
 
 ```text
-ragm_mcp/chroma_db/state.json
-ragm_mcp/chroma_db/hook_debug.jsonl
+.data/chroma_db/state.sqlite
+.data/chroma_db/hook_debug.jsonl
 ```
 
 Expected result:
 
-- `state.json` gets a new `user` entry from `UserPromptSubmit`.
-- `state.json` gets a new `assistant` entry from `Stop`.
+- `state.sqlite` gets a new `user` entry from `UserPromptSubmit`.
+- `state.sqlite` gets a new `assistant` entry from `Stop`.
 - `hook_debug.jsonl` gets a `Stop` record with `"saved": true`.
 
 ## Encoding Notes

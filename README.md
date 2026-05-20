@@ -92,6 +92,7 @@ Configs, tables, Mermaid diagrams, and code blocks are detected by code when pos
 | `tests/test_background_extraction.py` | In-process background structured extraction test. |
 | `tests/test_chat_background_extraction.py` | CLI chat background extraction wiring test. |
 | `tests/test_inspect_events.py` | Event log inspector script test. |
+| `tests/test_ragm_mcp_root_adapter.py` | MCP/hooks root API adapter test. |
 | `tests/test_context_bundle.py` | Structured context bundle and wrapper compatibility test. |
 | `tests/test_search_api.py` | Public search result API test. |
 | `tests/test_forget_preview.py` | Preview-only forget API test. |

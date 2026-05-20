@@ -36,10 +36,10 @@ def main() -> None:
     root = Path.cwd()
     sys.path.insert(0, str(root))
 
-    from ragm_mcp.server import store
+    from ragm_mcp.server import build_recall_context, save_user_message
 
-    store.add_message("user", prompt)
-    context = store.build_context(prompt)
+    context = build_recall_context(prompt)
+    save_user_message(prompt, extract_structured=False)
     if context:
         sys.stdout.write(json.dumps({
             "hookSpecificOutput": {

@@ -79,7 +79,12 @@ def text_from_value(value) -> str:
 
 
 def write_debug(payload: dict, saved: bool) -> None:
-    debug_dir = Path.cwd() / "ragm_mcp" / "chroma_db"
+    root = Path.cwd()
+    sys.path.insert(0, str(root))
+
+    from ragm_mcp.server import DB_PATH
+
+    debug_dir = DB_PATH
     debug_dir.mkdir(parents=True, exist_ok=True)
     record = {
         "event": "Stop",
@@ -99,9 +104,9 @@ def main() -> None:
         root = Path.cwd()
         sys.path.insert(0, str(root))
 
-        from ragm_mcp.server import store
+        from ragm_mcp.server import save_assistant_message
 
-        store.add_message("assistant", message)
+        save_assistant_message(message)
 
     write_debug(payload, bool(message))
     sys.stdout.write(json.dumps({}))
