@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import httpx
 from openai import OpenAI
 
-from memory import MemoryStore
+from ragmemory.memory import MemoryStore
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")

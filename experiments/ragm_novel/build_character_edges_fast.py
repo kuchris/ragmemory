@@ -7,9 +7,9 @@ Speedups over build_character_edges.py:
   3. Pre-filter    — skip chunks with no dialogue markers (「」) to save calls
 
 Run:
-    uv run python build_character_edges_fast.py
-    uv run python build_character_edges_fast.py --dry-run
-    uv run python build_character_edges_fast.py --batch-size 10 --concurrency 3
+    uv run python experiments/ragm_novel/build_character_edges_fast.py
+    uv run python experiments/ragm_novel/build_character_edges_fast.py --dry-run
+    uv run python experiments/ragm_novel/build_character_edges_fast.py --batch-size 10 --concurrency 3
 
 Resume: safe to re-run — chunk results cached in character_cache.json.
 """
@@ -26,7 +26,7 @@ from pathlib import Path
 
 import httpx
 
-from memory import MemoryStore
+from ragmemory.memory import MemoryStore
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")

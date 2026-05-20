@@ -2,9 +2,9 @@
 View raw Chroma chunks from a memory DB.
 
 Run:
-    uv run python view_chunks.py
+    uv run python scripts/view_chunks.py
 """
-from memory import MemoryStore
+from ragmemory.memory import MemoryStore
 
 DB_PATH = "./chroma_structured_test"
 MAX_CHARS = 700

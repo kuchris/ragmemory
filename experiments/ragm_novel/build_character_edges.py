@@ -6,10 +6,10 @@ names from each chunk, then writes "character" edges between chunks
 that share the same character.
 
 Run:
-    uv run python build_character_edges.py
-    uv run python build_character_edges.py --dry-run
-    uv run python build_character_edges.py --top-k 5
-    uv run python build_character_edges.py --db-path ./chroma_novel
+    uv run python experiments/ragm_novel/build_character_edges.py
+    uv run python experiments/ragm_novel/build_character_edges.py --dry-run
+    uv run python experiments/ragm_novel/build_character_edges.py --top-k 5
+    uv run python experiments/ragm_novel/build_character_edges.py --db-path ./chroma_novel
 
 Resume: interrupted runs are safe — chunk results are cached in
 character_cache.json so already-processed chunks are skipped.
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import httpx
 
-from memory import MemoryStore
+from ragmemory.memory import MemoryStore
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")

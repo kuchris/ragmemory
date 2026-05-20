@@ -1,10 +1,10 @@
 """
 Automated test: feeds long messages into memory, then checks retrieval.
-Run with: uv run python test_memory.py
+Run with: uv run python tests/test_memory.py
 """
 import shutil
 from pathlib import Path
-from memory import MemoryStore
+from ragmemory.memory import MemoryStore
 
 DB_PATH = Path("./chroma_test")
 
@@ -14,7 +14,7 @@ if DB_PATH.exists():
 store = MemoryStore(db_path=str(DB_PATH))
 
 # Feed the full plan as one big user message
-plan = Path("llamac_plan.md").read_text(encoding="utf-8")
+plan = Path("experiments/llamac_plan.md").read_text(encoding="utf-8")
 print("=== Feeding full plan ===\n")
 store.add_message("user", plan)
 print(f"Plan length: {len(plan)} chars\n")
@@ -62,7 +62,7 @@ for q in queries:
     print()
 
 print("=== Compression Test ===\n")
-from memory import CONTEXT_TOKEN_BUDGET
+from ragmemory.memory import CONTEXT_TOKEN_BUDGET
 print(f"Token budget: {CONTEXT_TOKEN_BUDGET}")
 ctx = store.build_context("what did we decide about compression?")
 print(f"Ledger size after compression: {len(store.ledger)}")

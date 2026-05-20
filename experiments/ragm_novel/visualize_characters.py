@@ -5,7 +5,7 @@ This does not call an LLM and does not rebuild character edges. It only reads:
     chroma_novel/character_cache.json
 
 Run:
-    uv run python visualize_characters.py
+    uv run python experiments/ragm_novel/visualize_characters.py
 """
 import collections
 import itertools

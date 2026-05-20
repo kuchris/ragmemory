@@ -2,10 +2,10 @@
 Ingest a plain-text novel into RagMemory chunks.
 
 Run:
-    uv run python ingest_novel.py path\to\novel.txt
+    uv run python experiments/ragm_novel/ingest_novel.py path\to\novel.txt
 
 Use the same DB as chat.py:
-    uv run python ingest_novel.py path\to\novel.txt --db-path ./chroma_structured_test
+    uv run python experiments/ragm_novel/ingest_novel.py path\to\novel.txt --db-path ./chroma_structured_test
 """
 import argparse
 import json
@@ -13,11 +13,9 @@ import re
 import shutil
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 import uuid
-from pathlib import Path
 
-from memory import MemoryStore, score_importance
+from ragmemory.memory import MemoryStore, score_importance
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")

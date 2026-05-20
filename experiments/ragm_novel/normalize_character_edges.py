@@ -3,8 +3,8 @@ Post-process graph_edges.jsonl: normalize character names in existing edges.
 Much faster than re-running LLM extraction.
 
 Run:
-    uv run python normalize_character_edges.py
-    uv run python normalize_character_edges.py --dry-run
+    uv run python experiments/ragm_novel/normalize_character_edges.py
+    uv run python experiments/ragm_novel/normalize_character_edges.py --dry-run
 """
 import argparse
 import json

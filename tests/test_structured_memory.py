@@ -4,14 +4,14 @@ Manual test for NVIDIA-backed structured memory extraction.
 Run:
     $env:PYTHONIOENCODING='utf-8'
     $env:NVIDIA_API_KEY='your-nvidia-api-key'
-    uv run python test_structured_memory.py
+    uv run python tests/test_structured_memory.py
 """
 import os
 import json
 import shutil
 from pathlib import Path
 
-from memory import MemoryStore
+from ragmemory.memory import MemoryStore
 
 DB_PATH = Path("./chroma_structured_test")
 LEDGER_PATH = DB_PATH / "structured_memory.jsonl"

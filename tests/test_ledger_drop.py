@@ -3,14 +3,14 @@ Force context-budget drops and verify ledger.json is created.
 
 Run:
     $env:PYTHONIOENCODING='utf-8'
-    uv run python test_ledger_drop.py
+    uv run python tests/test_ledger_drop.py
 """
 import json
 import shutil
 from pathlib import Path
 
-import memory
-from memory import MemoryStore
+import ragmemory.memory as memory
+from ragmemory.memory import MemoryStore
 
 DB_PATH = Path("./chroma_ledger_test")
 LEDGER_PATH = DB_PATH / "ledger.json"

@@ -1,7 +1,7 @@
 import os
 
 from openai import OpenAI
-from memory import MemoryStore
+from ragmemory.memory import MemoryStore
 
 # MODEL = "meta/llama-3.1-8b-instruct"
 # API_KEY_ENV = "NVIDIA_API_KEY"

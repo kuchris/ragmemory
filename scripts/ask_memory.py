@@ -2,9 +2,9 @@
 Ask retrieval questions against an existing memory DB.
 
 Run:
-    uv run python ask_memory.py
+    uv run python scripts/ask_memory.py
 """
-from memory import MemoryStore
+from ragmemory.memory import MemoryStore
 
 DB_PATH = "./chroma_structured_test"
 

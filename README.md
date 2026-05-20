@@ -78,15 +78,15 @@ Configs, tables, Mermaid diagrams, and code blocks are detected by code when pos
 
 | File | Purpose |
 |------|---------|
-| `memory.py` | Core memory engine. |
-| `chat.py` | CLI chat using NVIDIA API and RagMemory context. |
-| `ask_memory.py` | Prints retrieved context for preset questions. |
-| `view_chunks.py` | Shows raw Chroma chunks. |
-| `test_memory.py` | Basic raw retrieval behavior test. |
-| `test_structured_memory.py` | NVIDIA-backed structured extraction test. |
-| `test_ledger_drop.py` | Forced context-budget drop test. |
+| `src/ragmemory/memory.py` | Core memory engine. |
+| `scripts/chat.py` | CLI chat using NVIDIA API and RagMemory context. |
+| `scripts/ask_memory.py` | Prints retrieved context for preset questions. |
+| `scripts/view_chunks.py` | Shows raw Chroma chunks. |
+| `tests/test_memory.py` | Basic raw retrieval behavior test. |
+| `tests/test_structured_memory.py` | NVIDIA-backed structured extraction test. |
+| `tests/test_ledger_drop.py` | Forced context-budget drop test. |
 | `ragm_mcp/hooks/` | Codex hook scripts and install notes for automatic memory. |
-| `llamac_plan.md` | Design notes for future llama.cpp / pflash direction. |
+| `experiments/llamac_plan.md` | Design notes for future llama.cpp / pflash direction. |
 
 Generated folders:
 
@@ -101,6 +101,7 @@ chroma_db/
 
 ```powershell
 uv venv
+uv pip install -e .
 uv pip install openai chromadb rank-bm25 mcp
 ```
 
@@ -121,10 +122,10 @@ $env:STRUCTURED_MEMORY_MODEL='meta/llama-3.1-8b-instruct'
 Chat with the structured-memory test DB:
 
 ```powershell
-uv run python chat.py
+uv run python scripts/chat.py
 ```
 
-`chat.py` defaults to:
+`scripts/chat.py` defaults to:
 
 ```text
 ./chroma_structured_test
@@ -134,33 +135,33 @@ Use another DB:
 
 ```powershell
 $env:RAGMEMORY_DB_PATH='./chroma_db'
-uv run python chat.py
+uv run python scripts/chat.py
 ```
 
 Inspect retrieval context without calling the LLM:
 
 ```powershell
-uv run python ask_memory.py
+uv run python scripts/ask_memory.py
 ```
 
 View raw chunks:
 
 ```powershell
-uv run python view_chunks.py
+uv run python scripts/view_chunks.py
 ```
 
 Test structured extraction:
 
 ```powershell
 $env:NVIDIA_API_KEY='your-nvidia-api-key'
-uv run python test_structured_memory.py
+uv run python tests/test_structured_memory.py
 ```
 
 Test ledger dropping:
 
 ```powershell
 $env:PYTHONIOENCODING='utf-8'
-uv run python test_ledger_drop.py
+uv run python tests/test_ledger_drop.py
 ```
 
 ## Notes

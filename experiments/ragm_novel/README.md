@@ -11,7 +11,7 @@ Run all commands from the **repo root** (`ragmemory/`).
 ### 1. Ingest
 
 ```bash
-uv run python ragm_novel/ingest_novel.py novels/my_novel.txt --title "My Novel"
+uv run python experiments/ragm_novel/ingest_novel.py novels/my_novel.txt --title "My Novel"
 ```
 
 Splits the novel into ~900-char chunks by chapter, embeds them into ChromaDB (`./chroma_novel`), and writes sequential `next`/`prev` edges to `chroma_novel/graph_edges.jsonl`.
@@ -31,11 +31,11 @@ Calls LM Studio to extract character names from each chunk, then connects chunks
 
 ```bash
 # Fast version (batched + async)
-uv run python ragm_novel/build_character_edges_fast.py
+uv run python experiments/ragm_novel/build_character_edges_fast.py
 
 # Options
-uv run python ragm_novel/build_character_edges_fast.py --batch-size 10 --concurrency 2
-uv run python ragm_novel/build_character_edges_fast.py --dry-run
+uv run python experiments/ragm_novel/build_character_edges_fast.py --batch-size 10 --concurrency 2
+uv run python experiments/ragm_novel/build_character_edges_fast.py --dry-run
 ```
 
 | Flag | Default | Description |
@@ -54,14 +54,14 @@ Extraction results are cached in `chroma_novel/character_cache.json`. Re-runs sk
 If edges were written with un-normalized names, fix them in-place without re-running LLM:
 
 ```bash
-uv run python ragm_novel/normalize_character_edges.py --dry-run  # preview
-uv run python ragm_novel/normalize_character_edges.py            # apply
+uv run python experiments/ragm_novel/normalize_character_edges.py --dry-run  # preview
+uv run python experiments/ragm_novel/normalize_character_edges.py            # apply
 ```
 
 ### 4. Chat
 
 ```bash
-uv run python ragm_novel/chat_novel.py
+uv run python experiments/ragm_novel/chat_novel.py
 ```
 
 Requires LM Studio running at `http://localhost:1234`.
@@ -100,12 +100,12 @@ All edges live in `chroma_novel/graph_edges.jsonl`. Each line is one directed ed
 
 ```bash
 # Chapter/chunk bar chart
-uv run python ragm_novel/visualize_graph.py
-open ragm_novel/graph_visualization.html
+uv run python experiments/ragm_novel/visualize_graph.py
+open experiments/ragm_novel/graph_visualization.html
 
 # Character co-occurrence network
-uv run python ragm_novel/visualize_characters.py
-open ragm_novel/character_visualization.html
+uv run python experiments/ragm_novel/visualize_characters.py
+open experiments/ragm_novel/character_visualization.html
 ```
 
 ---
