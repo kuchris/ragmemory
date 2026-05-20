@@ -23,6 +23,7 @@ Do not commit that file. It is machine-local and contains your local checkout pa
 
 - Runs when Codex is about to end its turn.
 - Saves the latest assistant message to RagMemory.
+- Queues assistant structured extraction and drains up to 3 pending extraction jobs.
 - Writes a small debug record to `.data/chroma_db/hook_debug.jsonl`.
 
 Both hooks write through the same backend as the MCP server:
@@ -108,6 +109,22 @@ Expected result:
 - `state.sqlite` gets a new `user` entry from `UserPromptSubmit`.
 - `state.sqlite` gets a new `assistant` entry from `Stop`.
 - `hook_debug.jsonl` gets a `Stop` record with `"saved": true`.
+
+## Remove Bad Memory
+
+Hooks make recall/save automatic, but they do not provide an interactive removal
+tool for wrong, private, or harmful memory. Use the CLI helper from the repo root:
+
+```powershell
+uv run python scripts/remove_memory.py --recent 20
+uv run python scripts/remove_memory.py --search "wrong remembered detail"
+uv run python scripts/remove_memory.py --message-ids 12,13
+uv run python scripts/remove_memory.py --message-ids 12,13 --confirm
+```
+
+The first `--message-ids` command is a preview. Nothing is tombstoned until
+`--confirm` is present. This is separate from automatic forgetting, which is
+handled by decay-aware retrieval ranking.
 
 ## Encoding Notes
 

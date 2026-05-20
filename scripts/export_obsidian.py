@@ -7,6 +7,8 @@ then re-run this script; do not treat the Markdown files as source of truth.
 from __future__ import annotations
 
 import argparse
+import configparser
+import hashlib
 import json
 import re
 import shutil
@@ -18,6 +20,38 @@ from pathlib import Path
 DEFAULT_DB_PATH = Path("./.data/chroma_db")
 DEFAULT_OUTPUT_PATH = Path("./.data/obsidian_memory")
 TIMELINE_PAGE_SIZE = 500
+PATH_RE = re.compile(
+    r"\b(?:[\w.-]+/){1,8}[\w.-]+\."
+    r"(?:py|ts|js|rs|go|md|json|yaml|yml|toml|sql|sh|css|html|tsx|jsx)\b"
+)
+FILE_HUB_TYPES = {"code_reference", "config"}
+PROFILE_HUB_TYPES = {"preference", "identity"}
+DEFAULT_TOPIC_MIN_COUNT = 2
+DEFAULT_TOPIC_ALLOWLIST = {"ragmemory", "obsidian", "codex-hooks", "memory-decay"}
+DEFAULT_TOPIC_DENYLIST = {
+    "code_reference",
+    "config",
+    "decision",
+    "constraint",
+    "preference",
+    "open_question",
+    "chart",
+    "table",
+    "text",
+    "profile",
+    "python",
+    "powershell",
+    "javascript",
+    "typescript",
+    "bash",
+    "ini",
+    "yaml",
+    "json",
+    "markdown",
+    "sql",
+    "html",
+    "css",
+}
 
 
 @dataclass
@@ -40,6 +74,78 @@ class StructuredRow:
     importance: float
     message_id: int
     role: str
+
+
+@dataclass
+class TopicPolicy:
+    min_count: int
+    allowlist: set[str]
+    denylist: set[str]
+
+    def allows(self, tag: str, counts: dict[str, int]) -> bool:
+        canonical = canonical_tag(tag)
+        if not canonical or canonical in self.denylist:
+            return False
+        if canonical in self.allowlist:
+            return True
+        return counts.get(canonical, 0) >= self.min_count
+
+
+@dataclass
+class FileHubPolicy:
+    enabled: bool = False
+
+
+def split_config_list(value: str) -> set[str]:
+    return {
+        canonical_tag(item)
+        for item in re.split(r"[,\n]+", value)
+        if canonical_tag(item)
+    }
+
+
+def load_topic_policy(config_path: Path | None = None) -> TopicPolicy:
+    policy = TopicPolicy(
+        min_count=DEFAULT_TOPIC_MIN_COUNT,
+        allowlist=set(DEFAULT_TOPIC_ALLOWLIST),
+        denylist=set(DEFAULT_TOPIC_DENYLIST),
+    )
+    if config_path is None:
+        config_path = Path.cwd() / "ragmemory.local.ini"
+    if not config_path.exists():
+        return policy
+
+    parser = configparser.ConfigParser()
+    parser.read(config_path, encoding="utf-8-sig")
+    if not parser.has_section("obsidian.topics"):
+        return policy
+
+    section = parser["obsidian.topics"]
+    if section.get("min_count"):
+        try:
+            policy.min_count = max(1, int(section["min_count"]))
+        except ValueError:
+            pass
+    if section.get("allowlist"):
+        policy.allowlist = split_config_list(section["allowlist"])
+    if section.get("denylist"):
+        policy.denylist = split_config_list(section["denylist"])
+    return policy
+
+
+def load_file_hub_policy(config_path: Path | None = None) -> FileHubPolicy:
+    policy = FileHubPolicy()
+    if config_path is None:
+        config_path = Path.cwd() / "ragmemory.local.ini"
+    if not config_path.exists():
+        return policy
+
+    parser = configparser.ConfigParser()
+    parser.read(config_path, encoding="utf-8-sig")
+    if not parser.has_section("obsidian.files"):
+        return policy
+    policy.enabled = parser["obsidian.files"].getboolean("enable", fallback=False)
+    return policy
 
 
 def load_messages(db_path: Path) -> list[MessageRow]:
@@ -99,6 +205,96 @@ def structured_stem(object_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "-", object_id).strip("-") or "structured"
 
 
+def slugify(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")
+    return slug or "untitled"
+
+
+def stable_suffix(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
+
+
+def canonical_tag(tag: str) -> str:
+    return slugify(tag)
+
+
+def active_structured_rows(
+    structured: list[StructuredRow],
+    message_lookup: dict[int, MessageRow],
+) -> list[StructuredRow]:
+    return [
+        obj for obj in structured
+        if not message_lookup.get(
+            obj.message_id,
+            MessageRow(obj.message_id, obj.role, "", "", None, True),
+        ).tombstoned
+    ]
+
+
+def topic_counts(structured: list[StructuredRow]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for obj in structured:
+        seen = set()
+        for tag in obj.tags:
+            canonical = canonical_tag(tag)
+            if not canonical or canonical in seen:
+                continue
+            seen.add(canonical)
+            counts[canonical] = counts.get(canonical, 0) + 1
+    return counts
+
+
+@dataclass(frozen=True)
+class Hub:
+    stem: str
+    hub_type: str
+    canonical: str
+
+
+class HubRegistry:
+    def __init__(self):
+        self._by_key: dict[tuple[str, str], Hub] = {}
+        self._slug_sources: dict[tuple[str, str], str] = {}
+
+    def add(self, hub_type: str, canonical: str) -> Hub:
+        canonical = canonical.strip()
+        key = (hub_type, canonical.lower())
+        if key in self._by_key:
+            return self._by_key[key]
+
+        base_slug = slugify(canonical)
+        slug_key = (hub_type, base_slug)
+        existing = self._slug_sources.get(slug_key)
+        slug = base_slug
+        if existing is not None and existing != canonical.lower():
+            slug = f"{base_slug}-{stable_suffix(canonical.lower())}"
+        else:
+            self._slug_sources[slug_key] = canonical.lower()
+
+        stem = "profile/user" if hub_type == "profile" else f"{hub_type}s/{slug}"
+        hub = Hub(stem=stem, hub_type=hub_type, canonical=canonical)
+        self._by_key[key] = hub
+        return hub
+
+    def get(self, hub_type: str, canonical: str) -> Hub | None:
+        return self._by_key.get((hub_type, canonical.strip().lower()))
+
+    def values(self) -> list[Hub]:
+        return sorted(self._by_key.values(), key=lambda hub: hub.stem)
+
+
+def file_paths_from_source(text: str) -> list[str]:
+    paths = []
+    seen = set()
+    for match in PATH_RE.findall(text):
+        path = match.strip().strip("`'\".,;:()[]{}")
+        if len(path) < 4 or len(path) > 128 or " " in path or path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
+
+
 def frontmatter(fields: dict[str, object]) -> str:
     lines = ["---"]
     for key, value in fields.items():
@@ -119,6 +315,87 @@ def wikilink(stem: str) -> str:
     return f"[[{stem}]]"
 
 
+def escape_raw_wikilinks(text: str) -> str:
+    return text.replace("[[", "&#91;&#91;").replace("]]", "&#93;&#93;")
+
+
+def message_preview(message: MessageRow, limit: int = 120) -> str:
+    return escape_raw_wikilinks(" ".join(message.text.split())[:limit])
+
+
+def hubs_for_structured(
+    obj: StructuredRow,
+    registry: HubRegistry,
+    topic_policy: TopicPolicy,
+    counts: dict[str, int],
+    file_policy: FileHubPolicy,
+    create: bool = False,
+) -> list[Hub]:
+    hubs: list[Hub] = []
+    seen_tags = set()
+    for tag in sorted(obj.tags, key=lambda value: value.lower()):
+        key = tag.strip().lower()
+        if not key or key in seen_tags:
+            continue
+        seen_tags.add(key)
+        if not topic_policy.allows(tag, counts):
+            continue
+        hub = registry.add("topic", tag) if create else registry.get("topic", tag)
+        if hub:
+            hubs.append(hub)
+
+    if obj.type in PROFILE_HUB_TYPES:
+        hub = registry.add("profile", "user") if create else registry.get("profile", "user")
+        if hub:
+            hubs.append(hub)
+
+    if file_policy.enabled and obj.type in FILE_HUB_TYPES:
+        for path in file_paths_from_source(obj.source_text):
+            hub = registry.add("file", path) if create else registry.get("file", path)
+            if hub:
+                hubs.append(hub)
+
+    deduped = []
+    seen_stems = set()
+    for hub in hubs:
+        if hub.stem not in seen_stems:
+            seen_stems.add(hub.stem)
+            deduped.append(hub)
+    return deduped
+
+
+def build_hub_registry(
+    structured: list[StructuredRow],
+    topic_policy: TopicPolicy,
+    counts: dict[str, int],
+    file_policy: FileHubPolicy,
+) -> HubRegistry:
+    registry = HubRegistry()
+    for obj in structured:
+        hubs_for_structured(obj, registry, topic_policy, counts, file_policy, create=True)
+    return registry
+
+
+def hub_markdown(hub: Hub) -> str:
+    title = hub.stem
+    parts = [
+        frontmatter(
+            {
+                "generated": "ragmemory-export",
+                "hub_type": hub.hub_type,
+                "canonical": hub.canonical,
+                "cssclasses": ["hub"],
+            }
+        ),
+        "",
+        f"# {title}",
+        "",
+        f"Auto-generated `{hub.hub_type}` hub for `{hub.canonical}`.",
+        "",
+    ]
+    return "\n".join(parts)
+
+
 def message_markdown(
     message: MessageRow,
     structured: list[StructuredRow],
@@ -126,6 +403,9 @@ def message_markdown(
     next_message: MessageRow | None = None,
 ) -> str:
     related = [obj for obj in structured if obj.message_id == message.message_id]
+    cssclasses = ["memory-message"]
+    if not related:
+        cssclasses.append("memory-unlinked")
     parts = [
         frontmatter(
             {
@@ -137,6 +417,7 @@ def message_markdown(
                 "structured_objects": [structured_stem(obj.id) for obj in related],
                 "previous_message": message_stem(previous_message.message_id) if previous_message else None,
                 "next_message": message_stem(next_message.message_id) if next_message else None,
+                "cssclasses": cssclasses,
             }
         ),
         "",
@@ -147,19 +428,26 @@ def message_markdown(
     ]
     if message.created_at:
         parts.append(f"- Created: `{message.created_at}`")
-    if previous_message:
-        parts.append(f"- Previous: {wikilink(message_stem(previous_message.message_id))}")
-    if next_message:
-        parts.append(f"- Next: {wikilink(message_stem(next_message.message_id))}")
     if related:
         parts.append("- Structured: " + ", ".join(wikilink(structured_stem(obj.id)) for obj in related))
-    parts.extend(["", "## Text", "", message.text.strip(), ""])
+    parts.extend(["", "## Text", "", escape_raw_wikilinks(message.text.strip()), ""])
     return "\n".join(parts)
 
 
-def structured_markdown(obj: StructuredRow, message_lookup: dict[int, MessageRow]) -> str:
+def structured_markdown(
+    obj: StructuredRow,
+    message_lookup: dict[int, MessageRow],
+    hub_registry: HubRegistry,
+    topic_policy: TopicPolicy,
+    counts: dict[str, int],
+    file_policy: FileHubPolicy,
+) -> str:
     message = message_lookup.get(obj.message_id)
     status = "forgotten" if message and message.tombstoned else "active"
+    hubs = hubs_for_structured(obj, hub_registry, topic_policy, counts, file_policy, create=False)
+    topic_hubs = [hub for hub in hubs if hub.hub_type == "topic"]
+    file_hubs = [hub for hub in hubs if hub.hub_type == "file"]
+    profile_hubs = [hub for hub in hubs if hub.hub_type == "profile"]
     parts = [
         frontmatter(
             {
@@ -169,7 +457,7 @@ def structured_markdown(obj: StructuredRow, message_lookup: dict[int, MessageRow
                 "message_id": obj.message_id,
                 "role": obj.role,
                 "importance": obj.importance,
-                "tags": obj.tags,
+                "cssclasses": ["memory-structured"],
             }
         ),
         "",
@@ -182,7 +470,23 @@ def structured_markdown(obj: StructuredRow, message_lookup: dict[int, MessageRow
     ]
     if obj.tags:
         parts.append("- Tags: " + ", ".join(f"`{tag}`" for tag in obj.tags))
-    parts.extend(["", "## Summary", "", obj.summary.strip(), "", "## Source Text", "", obj.source_text.strip(), ""])
+    if topic_hubs:
+        parts.append("- Topics: " + ", ".join(wikilink(hub.stem) for hub in topic_hubs))
+    if file_hubs:
+        parts.append("- Files: " + ", ".join(wikilink(hub.stem) for hub in file_hubs))
+    if profile_hubs:
+        parts.append("- Profile: " + ", ".join(wikilink(hub.stem) for hub in profile_hubs))
+    parts.extend([
+        "",
+        "## Summary",
+        "",
+        escape_raw_wikilinks(obj.summary.strip()),
+        "",
+        "## Source Text",
+        "",
+        escape_raw_wikilinks(obj.source_text.strip()),
+        "",
+    ])
     return "\n".join(parts)
 
 
@@ -209,6 +513,7 @@ def index_markdown(
                 "generated": True,
                 "updated_at": updated_at,
                 "source": "ragmemory",
+                "cssclasses": ["navigation"],
             }
         ),
         "",
@@ -228,7 +533,7 @@ def index_markdown(
     ]
     if recent:
         for message in reversed(recent):
-            preview = " ".join(message.text.split())[:120]
+            preview = message_preview(message)
             parts.append(f"- {wikilink(message_stem(message.message_id))} `{message.role}` {preview}")
     else:
         parts.append("- No active messages.")
@@ -241,10 +546,10 @@ def index_markdown(
         "",
         "## Folders",
         "",
-        "- [[active/messages]]",
-        "- [[active/structured]]",
-        "- [[forgotten/messages]]",
-        "- [[forgotten/structured]]",
+        "- active/messages",
+        "- active/structured",
+        "- forgotten/messages",
+        "- forgotten/structured",
         "",
     ])
     return "\n".join(parts)
@@ -263,6 +568,7 @@ def timeline_markdown(messages: list[MessageRow], page_index: int, page_size: in
                 "map": "timeline",
                 "range_start": range_start,
                 "range_end": range_end,
+                "cssclasses": ["navigation"],
             }
         ),
         "",
@@ -273,7 +579,7 @@ def timeline_markdown(messages: list[MessageRow], page_index: int, page_size: in
     ]
     if page:
         for message in page:
-            preview = " ".join(message.text.split())[:120]
+            preview = message_preview(message)
             parts.append(f"- {wikilink(message_stem(message.message_id))} `{message.role}` {preview}")
     else:
         parts.append("- No active messages.")
@@ -314,6 +620,7 @@ def turns_markdown(messages: list[MessageRow]) -> str:
                 "source": "ragmemory",
                 "map": "turns",
                 "turn_rule": "one user message plus contiguous following assistant messages until the next user message",
+                "cssclasses": ["navigation"],
             }
         ),
         "",
@@ -328,7 +635,7 @@ def turns_markdown(messages: list[MessageRow]) -> str:
     for index, turn in enumerate(turns, start=1):
         parts.append(f"## Turn {index}")
         for message in turn:
-            preview = " ".join(message.text.split())[:120]
+            preview = message_preview(message)
             parts.append(f"- {message.role}: {wikilink(message_stem(message.message_id))} {preview}")
         parts.append("")
     return "\n".join(parts)
@@ -343,14 +650,53 @@ def write_if_changed(path: Path, content: str) -> bool:
     return True
 
 
+def write_if_missing(path: Path, content: str) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return False
+    path.write_text(content.replace("\r\n", "\n"), encoding="utf-8")
+    return True
+
+
+def is_generated_hub(path: Path) -> bool:
+    if not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    if not text.strip():
+        return True
+    return (
+        text.startswith("---\n")
+        and (
+            "generated: \"ragmemory-export\"\n" in text.split("---", 2)[1]
+            or "generated: true\n" in text.split("---", 2)[1]
+        )
+        and "cssclasses: [\"hub\"]" in text.split("---", 2)[1]
+    )
+
+
 def clean_stale_markdown(root: Path, expected: set[Path]) -> int:
     removed = 0
-    for folder in ("active/messages", "active/structured", "forgotten/messages", "forgotten/structured", "maps"):
+    generated_folders = (
+        "active/messages",
+        "active/structured",
+        "forgotten/messages",
+        "forgotten/structured",
+        "maps",
+    )
+    for folder in generated_folders:
         base = root / folder
         if not base.exists():
             continue
         for path in base.glob("*.md"):
             if path not in expected:
+                path.unlink()
+                removed += 1
+    for folder in ("topics", "files", "profile"):
+        base = root / folder
+        if not base.exists():
+            continue
+        for path in base.glob("*.md"):
+            if path not in expected and is_generated_hub(path):
                 path.unlink()
                 removed += 1
     for folder in ("active/messages", "active/structured", "forgotten/messages", "forgotten/structured"):
@@ -362,18 +708,36 @@ def clean_stale_markdown(root: Path, expected: set[Path]) -> int:
 
 
 def export_obsidian(
-    db_path: Path, output_path: Path, timeline_page_size: int = TIMELINE_PAGE_SIZE
+    db_path: Path,
+    output_path: Path,
+    timeline_page_size: int = TIMELINE_PAGE_SIZE,
+    config_path: Path | None = None,
 ) -> dict[str, int]:
     messages = load_messages(db_path)
     structured = load_structured(db_path)
     message_lookup = {message.message_id: message for message in messages}
+    topic_policy = load_topic_policy(config_path)
+    file_policy = load_file_hub_policy(config_path)
+    counts = topic_counts(active_structured_rows(structured, message_lookup))
+    hub_registry = build_hub_registry(
+        active_structured_rows(structured, message_lookup),
+        topic_policy,
+        counts,
+        file_policy,
+    )
     messages_by_id = sorted(messages, key=lambda message: message.message_id)
     active_messages = [message for message in messages_by_id if not message.tombstoned]
     expected: set[Path] = set()
     written = 0
 
-    for folder in ("active/messages", "active/structured", "forgotten/messages", "forgotten/structured", "maps"):
+    for folder in ("active/messages", "active/structured", "forgotten/messages", "forgotten/structured", "maps", "topics", "files", "profile"):
         (output_path / folder).mkdir(parents=True, exist_ok=True)
+
+    for hub in hub_registry.values():
+        path = output_path / f"{hub.stem}.md"
+        expected.add(path)
+        if write_if_missing(path, hub_markdown(hub)):
+            written += 1
 
     for index, message in enumerate(messages_by_id):
         folder = "forgotten" if message.tombstoned else "active"
@@ -389,7 +753,7 @@ def export_obsidian(
         folder = "forgotten" if message is None or message.tombstoned else "active"
         path = output_path / folder / "structured" / f"{structured_stem(obj.id)}.md"
         expected.add(path)
-        if write_if_changed(path, structured_markdown(obj, message_lookup)):
+        if write_if_changed(path, structured_markdown(obj, message_lookup, hub_registry, topic_policy, counts, file_policy)):
             written += 1
 
     index_path = output_path / "index.md"
@@ -424,13 +788,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--timeline-page-size", type=int, default=TIMELINE_PAGE_SIZE)
+    parser.add_argument("--config", type=Path, help="Optional ragmemory local settings file.")
     parser.add_argument("--clean", action="store_true", help="Remove the output folder before exporting.")
     args = parser.parse_args(argv)
 
     if args.clean and args.output.exists():
         shutil.rmtree(args.output)
 
-    stats = export_obsidian(args.db_path, args.output, timeline_page_size=args.timeline_page_size)
+    stats = export_obsidian(
+        args.db_path,
+        args.output,
+        timeline_page_size=args.timeline_page_size,
+        config_path=args.config,
+    )
     print(
         f"Exported {stats['messages']} message(s), {stats['structured']} structured object(s). "
         f"Written: {stats['written']} | Removed stale: {stats['removed']} | Output: {args.output}"

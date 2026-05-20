@@ -1,231 +1,245 @@
 # RagMemory
 
-RagMemory is a local prototype for persistent chat memory.
+RagMemory gives Codex a local memory that survives across turns.
 
-The goal is to keep useful context outside the model prompt, retrieve it when needed, and preserve exact artifacts such as configs, tables, and code blocks.
+It stores your conversation locally, recalls useful context before a new prompt,
+and keeps a generated Obsidian mirror so you can inspect what was remembered.
 
-## Concept
+## What It Does
 
-The model should not need the full conversation every turn.
+- Remembers useful chat context across Codex sessions.
+- Recalls relevant memory automatically through Codex hooks.
+- Saves assistant replies after each turn.
+- Extracts durable structured memory such as decisions, preferences, configs,
+  code references, and open questions.
+- Exports a readable Obsidian vault under `.data/obsidian_memory`.
+- Uses decay-aware retrieval so stale memories naturally appear less often.
+- Supports manual tombstone removal for wrong, private, or harmful memory.
 
-RagMemory stores memory in layers:
+Raw memory is not deleted during normal forgetting. Forgetting means old,
+unused memories rank lower during retrieval.
 
-| Layer | Purpose |
-|------|---------|
-| Raw log | Source-of-truth messages in `state.sqlite`. |
-| Raw chunks | Searchable Chroma chunks for broad recall. |
-| Structured memory | High-signal objects such as decisions, constraints, configs, tables, and open questions. |
-| Recent window | Latest messages included directly for short-term continuity. |
-| Removal ledger | Retrieved chunks that were dropped because the context budget was full. |
+## Recommended Setup
 
-The important rule is:
-
-```text
-raw chunks preserve recall
-structured memory preserves meaning
-exact artifacts preserve usable source
-```
-
-## Current Pipeline
-
-When saving a message:
-
-```text
-message
-  -> append raw log
-  -> split into chunks
-  -> embed chunks in Chroma
-  -> extract exact artifacts by code
-  -> optionally extract structured memory with NVIDIA API
-  -> store structured objects in JSONL + Chroma
-```
-
-When answering a question:
-
-```text
-question
-  -> retrieve structured memory
-  -> retrieve raw chunks with embedding search + BM25
-  -> add recent messages
-  -> drop overflow chunks into ledger.json
-  -> send context to the model
-```
-
-## Structured Memory
-
-Structured objects are stored in:
-
-```text
-<db_path>/structured_memory.jsonl
-```
-
-Supported object types:
-
-```text
-decision
-preference
-constraint
-config
-table
-code_reference
-chart
-open_question
-```
-
-Configs, tables, Mermaid diagrams, and code blocks are detected by code when possible, so their `source_text` stays exact. The LLM is used for semantic objects such as decisions, preferences, constraints, and open questions.
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `src/ragmemory/memory.py` | Core memory engine. |
-| `scripts/chat.py` | CLI chat using NVIDIA API and RagMemory context. |
-| `scripts/ask_memory.py` | Prints retrieved context for preset questions. |
-| `scripts/view_chunks.py` | Shows raw Chroma chunks. |
-| `scripts/inspect_events.py` | Filters the JSONL event log. |
-| `scripts/export_obsidian.py` | Exports a generated Markdown mirror for Obsidian. |
-| `tests/test_memory.py` | Basic raw retrieval behavior test. |
-| `tests/test_bm25_lazy_rebuild.py` | BM25 lazy rebuild behavior test. |
-| `tests/test_dedup.py` | Normalized duplicate-message skip test. |
-| `tests/test_sqlite_state.py` | SQLite raw-message state and legacy import test. |
-| `tests/test_public_api_signatures.py` | Public API signature contract test. |
-| `tests/test_golden_retrieval.py` | Fixed corpus retrieval regression test. |
-| `tests/test_background_extraction.py` | In-process background structured extraction test. |
-| `tests/test_chat_background_extraction.py` | CLI chat background extraction wiring test. |
-| `tests/test_inspect_events.py` | Event log inspector script test. |
-| `tests/test_export_obsidian.py` | Obsidian mirror export test. |
-| `tests/test_ragm_mcp_root_adapter.py` | MCP/hooks root API adapter test. |
-| `tests/test_ragm_mcp_forget_tools.py` | MCP forget preview/confirm wrapper test. |
-| `tests/test_ragm_mcp_obsidian_export.py` | MCP-triggered Obsidian mirror export test. |
-| `tests/test_context_bundle.py` | Structured context bundle and wrapper compatibility test. |
-| `tests/test_search_api.py` | Public search result API test. |
-| `tests/test_forget_preview.py` | Preview-only forget API test. |
-| `tests/test_forget_tombstone.py` | Message-id tombstone forget API test. |
-| `tests/test_forget_before.py` | Timestamp selector forget API test. |
-| `tests/test_exact_artifacts.py` | Deterministic exact artifact extraction test. |
-| `tests/test_importance_policy.py` | Retrieval-score context budget policy test. |
-| `tests/test_event_log.py` | JSONL observability event log test. |
-| `tests/test_structured_memory.py` | NVIDIA-backed structured extraction test. |
-| `tests/test_ledger_drop.py` | Forced context-budget drop test. |
-| `ragm_mcp/hooks/` | Codex hook scripts and install notes for automatic memory. |
-| `experiments/llamac_plan.md` | Design notes for future llama.cpp / pflash direction. |
-
-Generated folders:
-
-```text
-.data/chroma_structured_test/
-.data/chroma_test/
-.data/chroma_ledger_test/
-.data/chroma_db/
-```
-
-## Setup
+From the repo root:
 
 ```powershell
 uv venv
 uv pip install -e .
-uv pip install openai chromadb rank-bm25 mcp
 ```
 
-For NVIDIA-backed extraction/chat:
+Create your local settings file:
 
 ```powershell
-$env:NVIDIA_API_KEY='your-nvidia-api-key'
+Copy-Item .\ragmemory.example.ini .\ragmemory.local.ini
 ```
 
-Optional model override:
+Edit `ragmemory.local.ini` and add your API key:
 
-```powershell
-$env:STRUCTURED_MEMORY_MODEL='meta/llama-3.1-8b-instruct'
+```ini
+[structured_memory]
+api_key = your-nvidia-api-key
+model = minimaxai/minimax-m2.7
 ```
 
-## Run
+`ragmemory.local.ini` is ignored by git. Do not commit it.
 
-Chat with the structured-memory test DB:
+## Use With Codex Hooks
 
-```powershell
-uv run python scripts/chat.py
-```
-
-`scripts/chat.py` defaults to:
+Install the Codex hooks from:
 
 ```text
-./.data/chroma_structured_test
+ragm_mcp/hooks/README.md
 ```
 
-During chat, user messages queue structured extraction in the background queue,
-and one queued extraction job is processed after each assistant reply.
+After the hooks are installed:
 
-Use another DB:
+- `UserPromptSubmit` recalls memory and injects it into Codex.
+- `UserPromptSubmit` saves your user prompt.
+- `Stop` saves the assistant response.
+- `Stop` runs a few pending structured extraction jobs.
+- `Stop` refreshes the Obsidian mirror.
+
+You should see injected context like this at the start of a turn:
+
+```text
+=== RagMemory Context ===
+...
+=== End RagMemory Context ===
+```
+
+If this context takes too many tokens, tune the hook recall size in
+`ragmemory.local.ini`:
+
+```ini
+[recall]
+context_token_budget = 900
+retrieve_top_k = 3
+structured_top_k = 2
+recent_messages = 4
+include_recent = true
+include_structured = true
+```
+
+## MCP Tools
+
+MCP is optional when hooks are installed.
+
+Recommended local MCP settings:
+
+```ini
+[mcp.tools]
+enable_recall = false
+enable_save = false
+enable_tombstone = true
+```
+
+With this split:
+
+- Hooks own automatic recall and save.
+- MCP recall is disabled to avoid duplicate token usage.
+- MCP save is disabled to avoid duplicate writes.
+- MCP remains useful for `memory_stats`, `remove_memory_preview`, and
+  `remove_memory_confirm`.
+
+See the MCP details in:
+
+```text
+ragm_mcp/README.md
+```
+
+## Check What Was Remembered
+
+Inspect recent events:
 
 ```powershell
-$env:RAGMEMORY_DB_PATH='./.data/chroma_db'
-uv run python scripts/chat.py
+uv run python scripts/inspect_events.py --db-path ./.data/chroma_db --limit 20
 ```
 
-Inspect retrieval context without calling the LLM:
+Inspect structured-object add events:
 
 ```powershell
-uv run python scripts/ask_memory.py
+uv run python scripts/inspect_events.py --event structured_object_added
 ```
 
-View raw chunks:
+Check that the Obsidian graph export stays clean:
 
 ```powershell
-uv run python scripts/view_chunks.py
+uv run python scripts/check_obsidian_graph.py
 ```
 
-Inspect recent event-log entries:
+If the graph shows isolated message dots, hide raw message notes that have no
+structured links with this Obsidian graph filter:
 
-```powershell
-uv run python scripts/inspect_events.py --db-path ./.data/chroma_structured_test --limit 20
-uv run python scripts/inspect_events.py --event memory_tombstoned
-uv run python scripts/inspect_events.py --message-id 12 --json
+```text
+-["cssclasses":"memory-unlinked"]
 ```
 
-Export a generated Obsidian-readable Markdown mirror:
+File/path hubs are disabled by default because they can clutter the graph. Turn
+them on only if you want file-level nodes:
+
+```ini
+[obsidian.files]
+enable = true
+```
+
+Export the Obsidian mirror manually:
 
 ```powershell
 uv run python scripts/export_obsidian.py --db-path ./.data/chroma_db --output ./.data/obsidian_memory
 ```
 
-The mirror is a one-way projection. Edit RagMemory, not the generated Markdown.
-Active records are written under `active/`; tombstoned records are written under
-`forgotten/`. Message notes include previous/next links across the full message
-history, and `maps/` contains active-only timeline pages plus a simple turns
-view.
+Open this folder in Obsidian:
 
-The MCP adapter also updates this mirror after memory writes. Override the
-output path with `RAGMEMORY_OBSIDIAN_PATH`.
+```text
+.data/obsidian_memory
+```
+
+## Remove Bad Memory
+
+Use removal only for memory that is wrong, private, harmful, or should not be
+used again.
+
+Preview recent records:
+
+```powershell
+uv run python scripts/remove_memory.py --recent 20
+```
+
+Search for a bad record:
+
+```powershell
+uv run python scripts/remove_memory.py --search "wrong remembered detail"
+```
+
+Preview specific message IDs:
+
+```powershell
+uv run python scripts/remove_memory.py --message-ids 12,13
+```
+
+Confirm tombstone removal:
+
+```powershell
+uv run python scripts/remove_memory.py --message-ids 12,13 --confirm
+```
+
+This is tombstone-only. It hides records from retrieval and moves them to
+`forgotten/` in the Obsidian mirror. It does not hard-delete raw storage.
 
 ## Backup
 
-Back up the DB directory you actually use, for example:
+Back up the active DB folder:
 
 ```powershell
-Copy-Item -Recurse .\.data\chroma_structured_test .\.data\backup-chroma_structured_test
+Copy-Item -Recurse .\.data\chroma_db .\.data\backup-chroma_db
 ```
 
-That directory contains Chroma state, `state.sqlite`, `ledger.json`,
-`structured_memory.jsonl`, and `events.jsonl`.
+The DB folder contains:
 
-Test structured extraction:
-
-```powershell
-$env:NVIDIA_API_KEY='your-nvidia-api-key'
-uv run python tests/test_structured_memory.py
+```text
+state.sqlite
+chroma.sqlite3
+structured_memory.jsonl
+ledger.json
+events.jsonl
 ```
 
-Test ledger dropping:
+## Future Plan: Compaction
 
-```powershell
-$env:PYTHONIOENCODING='utf-8'
-uv run python tests/test_ledger_drop.py
+Compaction is not implemented yet.
+
+The current design is observability first, mechanism later. RagMemory now logs
+`structured_object_added` events with object ID, type, tags, message ID, role,
+importance, and background extraction job ID. That gives future compaction a
+real audit trail.
+
+Build `scripts/compact.py --dry-run` only when one of these concrete triggers
+appears:
+
+- `topics/` grows above roughly 30 hubs despite topic filtering.
+- `inspect_events.py --event structured_object_added` shows repeated structured
+  objects on the same `message_id`.
+- Several tag spellings normalize to the same concept.
+- Retrieval returns multiple results that are obviously the same memory.
+- Background extraction produces overlapping objects for the same `message_id`
+  from different `job_id` values.
+
+First compaction should be dry-run only. It should report candidates, not
+rewrite memory. Safe Tier 1 checks:
+
+- tag variant detection
+- likely duplicate structured objects
+- exact duplicate structured objects from repeated extraction jobs
+
+No LLM "sleep mode" should rewrite memory automatically. If LLM assistance is
+added later, use it only as a bounded judge for specific duplicate or
+supersession decisions.
+
+## Technical Details
+
+The implementation details, architecture, scripts, and tests live in:
+
+```text
+docs/technical.md
 ```
-
-## Notes
-
-- `message_id` is a message sequence number, not a paired user/assistant turn ID.
-- Normal chat saves raw chunks but does not run structured extraction every turn.
-- Structured extraction is best used for durable information: decisions, preferences, constraints, configs, tables, code references, and open questions.
-- Graph memory is intentionally postponed. The current focus is reliable layered memory first.

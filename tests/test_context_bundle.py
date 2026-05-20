@@ -23,23 +23,27 @@ memory.RECENT_MESSAGES = 0
 
 try:
     store = MemoryStore(db_path=str(DB_PATH))
-    store.retrieve_structured = lambda _query: []
-    store.retrieve = lambda _query: [
-        RetrievedChunk(
-            id="keep",
-            text="KEEP context bundle winner.",
-            importance=0.5,
-            message_id=2,
-            score=0.9,
-        ),
-        RetrievedChunk(
-            id="drop",
-            text="DROP context bundle loser.",
-            importance=0.5,
-            message_id=1,
-            score=0.1,
-        ),
-    ]
+    def fake_retrieve(_query, top_k=memory.RETRIEVE_TOP_K):
+        chunks = [
+            RetrievedChunk(
+                id="keep",
+                text="KEEP context bundle winner.",
+                importance=0.5,
+                message_id=2,
+                score=0.9,
+            ),
+            RetrievedChunk(
+                id="drop",
+                text="DROP context bundle loser.",
+                importance=0.5,
+                message_id=1,
+                score=0.1,
+            ),
+        ]
+        return chunks[:top_k]
+
+    store.retrieve_structured = lambda _query, top_k=memory.STRUCTURED_TOP_K: []
+    store.retrieve = fake_retrieve
 
     bundle = store.build_context_bundle("context bundle")
     assert bundle.query == "context bundle"
@@ -57,9 +61,23 @@ try:
     assert len(store.ledger) == 1
     assert store.ledger.entries[0].chunk_id == "drop"
 
+    store.configure_recall(
+        retrieve_top_k=0,
+        structured_top_k=0,
+        context_token_budget=5,
+        recent_messages=0,
+        include_recent=False,
+        include_structured=False,
+    )
+    small_bundle = store.build_context_bundle("context bundle")
+    assert small_bundle.token_budget == 5
+    assert small_bundle.recent == []
+    assert small_bundle.structured == []
+    assert small_bundle.retrieved == []
+
     compat_store = MemoryStore(db_path=str(DB_PATH))
-    compat_store.retrieve_structured = lambda _query: []
-    compat_store.retrieve = store.retrieve
+    compat_store.retrieve_structured = lambda _query, top_k=memory.STRUCTURED_TOP_K: []
+    compat_store.retrieve = fake_retrieve
     compat_bundle = compat_store.build_context_bundle("context bundle")
     assert format_for_prompt(compat_bundle) == compat_store.build_context("context bundle")
 finally:

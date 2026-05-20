@@ -4,12 +4,69 @@ import uuid
 import json
 import hashlib
 import sqlite3
+import configparser
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import chromadb
 from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
 from rank_bm25 import BM25Okapi
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+            continue
+        value = value.strip().strip("\"'")
+        os.environ.setdefault(key, value)
+
+
+def _load_settings_file(path: Path) -> None:
+    if not path.exists():
+        return
+    parser = configparser.ConfigParser()
+    parser.read(path, encoding="utf-8-sig")
+    if parser.has_section("structured_memory"):
+        section = parser["structured_memory"]
+        if section.get("api_key"):
+            os.environ.setdefault("NVIDIA_API_KEY", section["api_key"].strip())
+        if section.get("model"):
+            os.environ.setdefault("STRUCTURED_MEMORY_MODEL", section["model"].strip())
+
+
+def _load_local_config() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    seen = set()
+    for path in (
+        repo_root / "ragmemory.local.ini",
+        Path.cwd() / "ragmemory.local.ini",
+        Path.home() / ".ragmemory.ini",
+        repo_root / ".env",
+        Path.cwd() / ".env",
+        Path.home() / ".ragmemory.env",
+    ):
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.suffix == ".ini":
+            _load_settings_file(resolved)
+        else:
+            _load_env_file(resolved)
+
+
+_load_local_config()
 
 CHUNK_MAX_TOKENS = 300
 CHUNK_MIN_TOKENS = 80
@@ -18,9 +75,22 @@ RETRIEVE_TOP_K = 5
 STRUCTURED_TOP_K = 3
 CONTEXT_TOKEN_BUDGET = 2000
 RRF_K = 60  # reciprocal rank fusion constant
+DECAY_FETCH_MIN = 50
+DECAY_SCORE_FLOOR = 0.3
+DEFAULT_HALF_LIFE_DAYS = {
+    "raw_message": 7.0,
+    "debug_log": 1.0,
+    "open_question": 14.0,
+    "config": 30.0,
+    "code_reference": 30.0,
+    "decision": 90.0,
+    "constraint": 90.0,
+    "preference": 180.0,
+    "identity": 365.0,
+}
 NVIDIA_API_KEY_ENV = "NVIDIA_API_KEY"
 STRUCTURED_MEMORY_MODEL = os.environ.get(
-    "STRUCTURED_MEMORY_MODEL", "meta/llama-3.1-8b-instruct"
+    "STRUCTURED_MEMORY_MODEL", "minimaxai/minimax-m2.7"
 )
 STRUCTURED_TYPES = {
     "decision", "preference", "constraint", "config", "table",
@@ -65,6 +135,22 @@ class RetrievedChunk:
     importance: float
     message_id: int
     score: float = 0.0
+    decay_strength: float = 1.0
+    rrf_score: float = 0.0
+
+
+@dataclass
+class MemoryMetadata:
+    message_id: int
+    memory_type: str
+    created_at: str
+    last_accessed_at: str
+    access_count: int
+    base_importance: float
+    half_life_days: float
+    pinned: bool
+    superseded_by: str | None
+    tombstoned_at: str | None
 
 
 @dataclass
@@ -157,6 +243,16 @@ class ContextBundle:
     would_be_dropped: list[RetrievedChunk]
     token_budget: int
     tokens_used: int
+
+
+@dataclass
+class RecallOptions:
+    retrieve_top_k: int | None = None
+    structured_top_k: int | None = None
+    context_token_budget: int | None = None
+    recent_messages: int | None = None
+    include_recent: bool = True
+    include_structured: bool = True
 
 
 def format_for_prompt(bundle: ContextBundle) -> str:
@@ -398,6 +494,13 @@ Exact fenced code/config/chart blocks and Markdown tables are extracted by code 
 Only return config/table/code_reference/chart if there is a durable artifact that was not already obvious as a fenced block or Markdown table.
 If nothing durable exists, return {{"objects": []}}.
 
+Tag rules:
+- Tags must be concrete subject labels: project names, feature names, product/tool names, repo/module names, or durable workflow concepts.
+- Prefer 1-4 specific tags per object.
+- Do not copy the object type into tags.
+- Do not use generic artifact/meta/language tags such as code_reference, config, decision, preference, table, chart, text, profile, python, powershell, json, yaml, markdown, important, context, memory, note.
+- Good examples: ragmemory, obsidian-export, codex-hooks, memory-decay, topic-filtering.
+
 Return JSON in this exact shape:
 {{
   "objects": [
@@ -612,15 +715,40 @@ class MemoryStore:
         self._message_hashes: dict[tuple[str, str], int] = {}
         self._tombstoned_message_ids: set[int] = set()
         self._pending_extractions: list[StructuredExtractionJob] = []
+        self._recall_options = RecallOptions()
         self.message_id = 0
 
         self._load_state()
+
+    def configure_recall(
+        self,
+        *,
+        retrieve_top_k: int | None = None,
+        structured_top_k: int | None = None,
+        context_token_budget: int | None = None,
+        recent_messages: int | None = None,
+        include_recent: bool = True,
+        include_structured: bool = True,
+    ) -> None:
+        self._recall_options = RecallOptions(
+            retrieve_top_k=max(0, retrieve_top_k) if retrieve_top_k is not None else None,
+            structured_top_k=max(0, structured_top_k) if structured_top_k is not None else None,
+            context_token_budget=(
+                max(0, context_token_budget)
+                if context_token_budget is not None else None
+            ),
+            recent_messages=max(0, recent_messages) if recent_messages is not None else None,
+            include_recent=include_recent,
+            include_structured=include_structured,
+        )
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _load_state(self):
         self._init_state_db()
         self._migrate_json_state()
+        with sqlite3.connect(self.state_db) as conn:
+            self._backfill_memory_metadata(conn)
         with sqlite3.connect(self.state_db) as conn:
             rows = conn.execute(
                 """
@@ -675,9 +803,68 @@ class MemoryStore:
                 (str(self.message_id),),
             )
 
+    def _sync_message_state_from_db(self):
+        with sqlite3.connect(self.state_db) as conn:
+            rows = conn.execute(
+                """
+                SELECT message_id, role, text, content_hash, created_at
+                FROM messages
+                WHERE tombstoned = 0
+                ORDER BY message_id
+                """
+            ).fetchall()
+            tombstoned_rows = conn.execute(
+                "SELECT message_id FROM messages WHERE tombstoned = 1"
+            ).fetchall()
+            next_id = conn.execute(
+                "SELECT value FROM meta WHERE key = 'next_message_id'"
+            ).fetchone()
+            max_id = conn.execute("SELECT MAX(message_id) FROM messages").fetchone()[0]
+
+        self.raw_log = [
+            {
+                "role": role,
+                "text": text,
+                "message_id": message_id,
+                "content_hash": content_hash,
+                "created_at": created_at,
+            }
+            for message_id, role, text, content_hash, created_at in rows
+        ]
+        self._message_hashes = {
+            (message["role"], message["content_hash"]): message["message_id"]
+            for message in self.raw_log
+        }
+        self._tombstoned_message_ids = {message_id for (message_id,) in tombstoned_rows}
+        db_next = int(next_id[0]) if next_id else 0
+        max_next = (max_id + 1) if max_id is not None else 0
+        self.message_id = max(self.message_id, db_next, max_next)
+
+    def _allocate_message_id(self) -> int:
+        with sqlite3.connect(self.state_db) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            next_id_row = conn.execute(
+                "SELECT value FROM meta WHERE key = 'next_message_id'"
+            ).fetchone()
+            max_id = conn.execute("SELECT MAX(message_id) FROM messages").fetchone()[0]
+            db_next = int(next_id_row[0]) if next_id_row else 0
+            max_next = (max_id + 1) if max_id is not None else 0
+            message_id = max(self.message_id, db_next, max_next)
+            next_message_id = message_id + 1
+            conn.execute(
+                """
+                INSERT INTO meta(key, value) VALUES('next_message_id', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (str(next_message_id),),
+            )
+            self.message_id = next_message_id
+            return message_id
+
     def _init_state_db(self):
         with sqlite3.connect(self.state_db) as conn:
             self._create_messages_table(conn)
+            self._create_memory_metadata_table(conn)
             self._migrate_message_uniqueness(conn)
             conn.execute(
                 """
@@ -694,6 +881,7 @@ class MemoryStore:
                 )
                 """
             )
+            self._backfill_memory_metadata(conn)
 
     def _create_messages_table(self, conn):
         conn.execute(
@@ -705,6 +893,25 @@ class MemoryStore:
                 content_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 tombstoned INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+
+    def _create_memory_metadata_table(self, conn):
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_metadata (
+                message_id INTEGER PRIMARY KEY,
+                memory_type TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_accessed_at TEXT NOT NULL,
+                access_count INTEGER NOT NULL DEFAULT 0,
+                base_importance REAL NOT NULL DEFAULT 1.0,
+                half_life_days REAL NOT NULL,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                superseded_by TEXT,
+                tombstoned_at TEXT,
+                FOREIGN KEY(message_id) REFERENCES messages(message_id)
             )
             """
         )
@@ -729,6 +936,30 @@ class MemoryStore:
             """
         )
         conn.execute("DROP TABLE messages_old_unique")
+
+    def _backfill_memory_metadata(self, conn):
+        default_half_life = DEFAULT_HALF_LIFE_DAYS["raw_message"]
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO memory_metadata(
+                message_id, memory_type, created_at, last_accessed_at,
+                access_count, base_importance, half_life_days, pinned,
+                tombstoned_at
+            )
+            SELECT
+                message_id,
+                'raw_message',
+                created_at,
+                created_at,
+                0,
+                1.0,
+                ?,
+                0,
+                CASE WHEN tombstoned = 1 THEN created_at ELSE NULL END
+            FROM messages
+            """,
+            (default_half_life,),
+        )
 
     def _migrate_json_state(self):
         if not self.state_file.exists():
@@ -785,6 +1016,24 @@ class MemoryStore:
                     message["created_at"],
                 ),
             )
+            self._persist_memory_metadata(conn, message)
+
+    def _persist_memory_metadata(self, conn, message: dict):
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO memory_metadata(
+                message_id, memory_type, created_at, last_accessed_at,
+                access_count, base_importance, half_life_days, pinned
+            ) VALUES (?, ?, ?, ?, 0, 1.0, ?, 0)
+            """,
+            (
+                message["message_id"],
+                "raw_message",
+                message["created_at"],
+                message["created_at"],
+                DEFAULT_HALF_LIFE_DAYS["raw_message"],
+            ),
+        )
 
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -808,11 +1057,107 @@ class MemoryStore:
     def _is_message_tombstoned(self, message_id: int) -> bool:
         return message_id in self._tombstoned_message_ids
 
+    def _parse_iso_datetime(self, value: str | None) -> datetime:
+        if not value:
+            return datetime.now(timezone.utc)
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _load_memory_metadata(self, message_ids: set[int]) -> dict[int, MemoryMetadata]:
+        if not message_ids:
+            return {}
+        placeholders = ",".join("?" for _ in message_ids)
+        with sqlite3.connect(self.state_db) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    message_id, memory_type, created_at, last_accessed_at,
+                    access_count, base_importance, half_life_days, pinned,
+                    superseded_by, tombstoned_at
+                FROM memory_metadata
+                WHERE message_id IN ({placeholders})
+                """,
+                tuple(message_ids),
+            ).fetchall()
+        return {
+            message_id: MemoryMetadata(
+                message_id=message_id,
+                memory_type=memory_type,
+                created_at=created_at,
+                last_accessed_at=last_accessed_at,
+                access_count=access_count,
+                base_importance=base_importance,
+                half_life_days=half_life_days,
+                pinned=bool(pinned),
+                superseded_by=superseded_by,
+                tombstoned_at=tombstoned_at,
+            )
+            for (
+                message_id,
+                memory_type,
+                created_at,
+                last_accessed_at,
+                access_count,
+                base_importance,
+                half_life_days,
+                pinned,
+                superseded_by,
+                tombstoned_at,
+            ) in rows
+        }
+
+    def _decay_strength(self, metadata: MemoryMetadata | None, now: datetime) -> float:
+        if metadata is None or metadata.pinned:
+            return 1.0
+        half_life_days = max(metadata.half_life_days, 0.001)
+        last_accessed = self._parse_iso_datetime(metadata.last_accessed_at)
+        age_days = max((now - last_accessed).total_seconds() / 86400, 0.0)
+        strength = metadata.base_importance * (2 ** (-age_days / half_life_days))
+        return min(max(strength, 0.0), 1.0)
+
+    def _is_metadata_active(self, metadata: MemoryMetadata | None) -> bool:
+        return metadata is None or (
+            metadata.tombstoned_at is None and metadata.superseded_by is None
+        )
+
+    def _touch_memory_metadata(self, message_ids: set[int]) -> None:
+        active_ids = [
+            message_id for message_id in sorted(message_ids)
+            if not self._is_message_tombstoned(message_id)
+        ]
+        if not active_ids:
+            return
+        now = self._now_iso()
+        with sqlite3.connect(self.state_db) as conn:
+            conn.executemany(
+                """
+                UPDATE memory_metadata
+                SET last_accessed_at = ?, access_count = access_count + 1
+                WHERE message_id = ?
+                  AND tombstoned_at IS NULL
+                  AND superseded_by IS NULL
+                """,
+                [(now, message_id) for message_id in active_ids],
+            )
+        self._log_event(
+            "memory_accessed",
+            message_ids=active_ids,
+            count=len(active_ids),
+            reason="context_injected",
+            citation_evidence=False,
+        )
+
     # ── Write ─────────────────────────────────────────────────────────────────
 
     def add_message(
         self, role: str, text: str, extract_structured: bool | str = True
     ) -> AddMessageResult:
+        self._sync_message_state_from_db()
         content_hash = self._content_hash(text)
         dedup_key = (role, content_hash)
         if dedup_key in self._message_hashes:
@@ -834,7 +1179,7 @@ class MemoryStore:
                 queued_job_ids=[],
             )
 
-        message_id = self.message_id
+        message_id = self._allocate_message_id()
         self.raw_log.append({
             "role": role,
             "text": text,
@@ -843,11 +1188,9 @@ class MemoryStore:
             "created_at": self._now_iso(),
         })
         self._message_hashes[dedup_key] = message_id
-        chunks = self.chunker.split(text, self.message_id, role)
+        chunks = self.chunker.split(text, message_id, role)
         if not chunks:
             self._persist_message(self.raw_log[-1])
-            self.message_id += 1
-            self._save_state()
             self._log_event(
                 "message_saved",
                 role=role,
@@ -880,10 +1223,11 @@ class MemoryStore:
         queued_job_ids = []
         if extract_structured == "background":
             structured = []
-            queued_job_ids = [self._queue_structured_extraction(role, text, self.message_id)]
+            queued_job_ids = [self._queue_structured_extraction(role, text, message_id)]
         elif extract_structured:
-            structured = self._extract_structured_objects(role, text, self.message_id)
+            structured = self._extract_structured_objects(role, text, message_id)
             self.structured.add_many(structured)
+            self._log_structured_objects_added(structured, reason="message_saved")
             if structured:
                 print(f"  [structured {len(structured)} object(s) | total: {len(self.structured)}]")
         else:
@@ -891,8 +1235,6 @@ class MemoryStore:
 
         print(f"  [stored {len(chunks)} chunk(s) | total: {self.collection.count()}]")
         self._persist_message(self.raw_log[-1])
-        self.message_id += 1
-        self._save_state()
         self._log_event(
             "message_saved",
             role=role,
@@ -924,6 +1266,23 @@ class MemoryStore:
             and not self._duplicates_exact_artifact(obj, exact_sources)
         )
         return structured
+
+    def _log_structured_objects_added(
+        self, objects: list[StructuredMemoryObject], reason: str, job_id: str | None = None
+    ) -> None:
+        for obj in objects:
+            payload = {
+                "structured_object_id": obj.id,
+                "type": obj.type,
+                "tags": obj.tags,
+                "message_id": obj.message_id,
+                "role": obj.role,
+                "importance": obj.importance,
+                "reason": reason,
+            }
+            if job_id:
+                payload["job_id"] = job_id
+            self._log_event("structured_object_added", **payload)
 
     def _queue_structured_extraction(self, role: str, text: str, message_id: int) -> str:
         job = StructuredExtractionJob(
@@ -964,6 +1323,11 @@ class MemoryStore:
                 job.role, job.text, job.message_id
             )
             self.structured.add_many(structured)
+            self._log_structured_objects_added(
+                structured,
+                reason="structured_extraction_completed",
+                job_id=job.job_id,
+            )
             object_ids = [obj.id for obj in structured]
             structured_object_ids.extend(object_ids)
             self._log_event(
@@ -985,7 +1349,9 @@ class MemoryStore:
         if count == 0 or top_k <= 0:
             return []
 
-        fetch_k = count if self._tombstoned_message_ids else min(top_k * 2, count)
+        fetch_k = min(max(top_k * 10, DECAY_FETCH_MIN), count)
+        if self._tombstoned_message_ids:
+            fetch_k = count
 
         # embedding retrieval
         emb_results = self.collection.query(
@@ -1011,6 +1377,12 @@ class MemoryStore:
 
         # fetch full docs for merged IDs
         fetched = self.collection.get(ids=merged_ids, include=["documents", "metadatas"])
+        message_ids = {
+            (meta or {}).get("message_id", (meta or {}).get("turn_id", 0))
+            for meta in fetched["metadatas"]
+        }
+        memory_metadata = self._load_memory_metadata(message_ids)
+        now = datetime.now(timezone.utc)
         id_to_chunk = {
             id: RetrievedChunk(
                 id=id,
@@ -1018,16 +1390,30 @@ class MemoryStore:
                 importance=(meta or {}).get("importance", 0.5),
                 message_id=(meta or {}).get("message_id", (meta or {}).get("turn_id", 0)),
                 score=rrf_scores.get(id, 0.0),
+                rrf_score=rrf_scores.get(id, 0.0),
             )
             for id, doc, meta in zip(fetched["ids"], fetched["documents"], fetched["metadatas"])
         }
+        for chunk in id_to_chunk.values():
+            metadata = memory_metadata.get(chunk.message_id)
+            strength = self._decay_strength(metadata, now)
+            chunk.decay_strength = strength
+            chunk.score = chunk.rrf_score * (
+                DECAY_SCORE_FLOOR + (1 - DECAY_SCORE_FLOOR) * strength
+            )
 
+        ranked_ids = sorted(
+            (id for id in merged_ids if id in id_to_chunk),
+            key=lambda id: -id_to_chunk[id].score,
+        )
         seen, unique = set(), []
-        for id in merged_ids:
+        for id in ranked_ids:
             chunk = id_to_chunk.get(id)
+            metadata = memory_metadata.get(chunk.message_id) if chunk else None
             if (
                 chunk
                 and not self._is_message_tombstoned(chunk.message_id)
+                and self._is_metadata_active(metadata)
                 and chunk.text not in seen
             ):
                 seen.add(chunk.text)
@@ -1040,6 +1426,8 @@ class MemoryStore:
             result_count=len(unique),
             chunk_ids=[chunk.id for chunk in unique],
             scores=[round(chunk.score, 6) for chunk in unique],
+            rrf_scores=[round(chunk.rrf_score, 6) for chunk in unique],
+            decay_strengths=[round(chunk.decay_strength, 6) for chunk in unique],
             message_ids=[chunk.message_id for chunk in unique],
         )
         return unique
@@ -1086,10 +1474,19 @@ class MemoryStore:
         ]
         matched_message_ids = [message["message_id"] for message in matched_messages]
         if matched_message_ids:
+            now = self._now_iso()
             with sqlite3.connect(self.state_db) as conn:
                 conn.executemany(
                     "UPDATE messages SET tombstoned = 1 WHERE message_id = ?",
                     [(message_id,) for message_id in matched_message_ids],
+                )
+                conn.executemany(
+                    """
+                    UPDATE memory_metadata
+                    SET tombstoned_at = ?
+                    WHERE message_id = ?
+                    """,
+                    [(now, message_id) for message_id in matched_message_ids],
                 )
             self._tombstoned_message_ids.update(matched_message_ids)
             matched_id_set = set(matched_message_ids)
@@ -1233,6 +1630,21 @@ class MemoryStore:
         return len(text) // 4
 
     def build_context_bundle(self, user_message: str) -> ContextBundle:
+        options = self._recall_options
+        recent_limit = (
+            RECENT_MESSAGES if options.recent_messages is None else options.recent_messages
+        )
+        retrieve_top_k = (
+            RETRIEVE_TOP_K if options.retrieve_top_k is None else options.retrieve_top_k
+        )
+        structured_top_k = (
+            STRUCTURED_TOP_K
+            if options.structured_top_k is None else options.structured_top_k
+        )
+        token_budget = (
+            CONTEXT_TOKEN_BUDGET
+            if options.context_token_budget is None else options.context_token_budget
+        )
         recent = [
             MessageRecord(
                 role=message["role"],
@@ -1241,12 +1653,21 @@ class MemoryStore:
                 content_hash=message["content_hash"],
                 created_at=message.get("created_at"),
             )
-            for message in (self.raw_log[-RECENT_MESSAGES:] if RECENT_MESSAGES > 0 else [])
+            for message in (
+                self.raw_log[-recent_limit:]
+                if options.include_recent and recent_limit > 0 else []
+            )
         ]
         recent_texts = {message.text for message in recent}
 
-        structured = self.retrieve_structured(user_message)
-        retrieved = [chunk for chunk in self.retrieve(user_message) if chunk.text not in recent_texts]
+        structured = (
+            self.retrieve_structured(user_message, top_k=structured_top_k)
+            if options.include_structured else []
+        )
+        retrieved = [
+            chunk for chunk in self.retrieve(user_message, top_k=retrieve_top_k)
+            if chunk.text not in recent_texts
+        ]
 
         ledger_recovered = []
         if self.ledger.looks_like_missing_context(user_message) and len(self.ledger) > 0:
@@ -1265,7 +1686,7 @@ class MemoryStore:
                     break
             print(f"  [ledger recovery] searched archived chunks")
 
-        budget = CONTEXT_TOKEN_BUDGET
+        budget = token_budget
         kept, would_be_dropped = [], []
         for chunk in sorted(retrieved + ledger_recovered, key=lambda c: (-c.score, -c.message_id)):
             tokens = self._estimate_tokens(chunk.text)
@@ -1283,9 +1704,10 @@ class MemoryStore:
             ledger_recovered=ledger_recovered,
             kept=kept,
             would_be_dropped=would_be_dropped,
-            token_budget=CONTEXT_TOKEN_BUDGET,
-            tokens_used=CONTEXT_TOKEN_BUDGET - budget,
+            token_budget=token_budget,
+            tokens_used=token_budget - budget,
         )
+        self._touch_memory_metadata({chunk.message_id for chunk in kept})
         self._log_event(
             "context_built",
             query=user_message,
@@ -1295,6 +1717,9 @@ class MemoryStore:
             kept_count=len(kept),
             dropped_count=len(would_be_dropped),
             recent_count=len(recent),
+            token_budget=token_budget,
+            retrieve_top_k=retrieve_top_k,
+            structured_top_k=structured_top_k,
         )
         return bundle
 

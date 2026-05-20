@@ -26,16 +26,25 @@ user message
 | Retrieved memory | Semantically relevant chunks | Every user request |
 | Removal ledger | Chunks dropped from context budget | On missing-context phrases |
 
+Automatic forgetting is decay-aware ranking. Raw memories stay in SQLite and
+Chroma; `memory_metadata` lowers stale memories in retrieval over time and
+refreshes only memories that are actually injected into context.
+
 ## Tools
 
 | Tool | Description |
 |------|-------------|
-| `recall(user_message)` | Call at turn start. Retrieves context, then stores the user message. |
-| `save(summary)` | Call at turn end. Stores a short assistant summary and runs one pending extraction job. |
-| `remember_document(text)` | Stores a large document or paste, split into chunks. |
-| `forget_preview(message_ids, before)` | Shows records that would be tombstoned. `message_ids` is comma/space separated; `before` is an ingest-time cutoff. |
-| `forget_confirm(message_ids, before)` | Tombstones records after previewing with the same selector. |
+| `recall(user_message)` | Disabled unless `[mcp.tools] enable_recall = true`. Keep disabled when hooks own recall. |
+| `save(summary)` | Call at turn end only if `[mcp.tools] enable_save = true`. Stores a short assistant summary and runs one pending extraction job. |
+| `remember_document(text)` | Stores a large document or paste only if `[mcp.tools] enable_save = true`. |
+| `remove_memory_preview(message_ids, before)` | Shows records that would be tombstoned. `before` is preview-only. |
+| `remove_memory_confirm(message_ids, reason)` | Tombstones up to 3 explicit message IDs. Requires `[mcp.tools] enable_tombstone = true`. |
+| `forget_preview(...)` / `forget_confirm(...)` | Deprecated aliases kept for compatibility. Prefer `remove_memory_*`. |
 | `memory_stats()` | Shows DB path, chunk count, message count, structured count, pending jobs, and ledger size. |
+
+Removal is tombstone-only. Use it only when the current user explicitly asks to
+forget, remove, or delete a specific memory. Automatic decay handles stale
+memory.
 
 ## Setup
 
@@ -78,11 +87,24 @@ uv run python scripts/export_obsidian.py --db-path ./.data/chroma_db --output ./
 ```
 
 The MCP adapter updates this mirror after `recall`, `save`,
-`remember_document`, and `forget_confirm`. The mirror is generated and one-way.
+`remember_document`, and `remove_memory_confirm`. The mirror is generated and one-way.
 Active records go under `active/`; tombstoned records go under `forgotten/`.
-Message notes include previous/next links, and `maps/` contains active-only
-timeline pages plus a simple turns view. Override the output folder with
-`RAGMEMORY_OBSIDIAN_PATH`.
+Message notes include previous/next frontmatter, and `maps/` contains
+active-only timeline pages plus a simple turns view. Override the output folder
+with `RAGMEMORY_OBSIDIAN_PATH`.
+
+The generated graph is semantic-first: chronology lives in frontmatter, maps
+are tagged `cssclasses: ["navigation"]`, and structured notes link to generated
+hub notes under `topics/`, `files/`, and `profile/`. To hide timeline/turns
+navigation from Obsidian graph view, use:
+
+```text
+-["cssclasses":"navigation"]
+```
+
+Topic hubs are filtered by `[obsidian.topics]` in `ragmemory.local.ini`.
+Denylisted artifact/type/language tags are hidden, allowlisted tags are always
+shown, and other tags need to recur at least `min_count` times.
 
 ## Claude Desktop Config
 
@@ -146,16 +168,19 @@ Codex usually works better with the direct hook setup in
 `ragm_mcp/hooks/README.md`, but the MCP server remains available for clients
 that prefer explicit memory tools.
 
+The direct Stop hook saves assistant messages with structured extraction queued
+and drains up to 3 pending extraction jobs before exporting the Obsidian mirror.
+
 ## Agent Instructions
 
 Add to your agent's system prompt or use the included `AGENTS.md`:
 
 ```text
 Every turn:
-1. Call recall(user_message=<user message>) before answering
-2. Call save(summary=<1-2 sentence summary>) after answering
-For large documents: use remember_document(text=<content>)
-For removal: call forget_preview(...) first, then forget_confirm(...) only after explicit user approval
+1. Call recall(user_message=<user message>) before answering only when MCP recall is enabled
+2. Call save(summary=<1-2 sentence summary>) after answering only when MCP save is enabled
+For large documents: use remember_document(text=<content>) only when MCP save is enabled
+For removal: call remove_memory_preview(...) first, then remove_memory_confirm(message_ids=<explicit ids>, reason=<specific reason>) only after explicit user approval
 ```
 
 ## Configuration
@@ -181,5 +206,6 @@ Core retrieval constants live in `src/ragmemory/memory.py`.
 - **Raw state**: SQLite
 - **Keyword search**: BM25, rebuilt lazily on search
 - **Retrieval fusion**: Reciprocal Rank Fusion combining embedding + BM25 scores
+- **Forgetting**: SQLite metadata decay reranking; no Chroma deletion
 - **Context budgeting**: retrieval-score based
 - **Chunking**: paragraph-based with header context injection and sentence fallback

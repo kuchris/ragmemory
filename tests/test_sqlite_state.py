@@ -15,8 +15,9 @@ from ragmemory.memory import MemoryStore
 DB_PATH = Path("./.data/chroma_sqlite_state_test")
 MIGRATION_DB_PATH = Path("./.data/chroma_state_migration_test")
 UNIQUE_DB_PATH = Path("./.data/chroma_state_unique_migration_test")
+CONCURRENT_DB_PATH = Path("./.data/chroma_state_concurrent_writer_test")
 
-for path in (DB_PATH, MIGRATION_DB_PATH, UNIQUE_DB_PATH):
+for path in (DB_PATH, MIGRATION_DB_PATH, UNIQUE_DB_PATH, CONCURRENT_DB_PATH):
     if path.exists():
         shutil.rmtree(path)
 
@@ -107,5 +108,28 @@ with sqlite3.connect(unique_migrated.state_db) as conn:
         ) VALUES (1, 'user', 'new active', 'samehash', '2026-01-02T00:00:00Z', 0)
         """
     )
+
+first_writer = MemoryStore(db_path=str(CONCURRENT_DB_PATH))
+stale_writer = MemoryStore(db_path=str(CONCURRENT_DB_PATH))
+
+first_live = first_writer.add_message(
+    "user",
+    "First live writer reserves id zero.",
+    extract_structured=False,
+)
+second_live = stale_writer.add_message(
+    "assistant",
+    "Second stale writer must reserve the next SQLite id.",
+    extract_structured=False,
+)
+
+assert first_live.message_id == 0
+assert second_live.message_id == 1
+
+with sqlite3.connect(CONCURRENT_DB_PATH / "state.sqlite") as conn:
+    assert conn.execute(
+        "SELECT value FROM meta WHERE key = 'next_message_id'"
+    ).fetchone() == ("2",)
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (2,)
 
 print("SQLite state test passed.")

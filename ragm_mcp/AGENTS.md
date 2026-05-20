@@ -1,24 +1,76 @@
-## RagMemory MCP
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
-If the `rag-memory` MCP tools are available, use them for persistent memory.
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
-At the start of each user turn:
-1. Call `recall(user_message=<exact user message>)`.
-2. Use relevant returned memory.
-3. Ignore memory that is unrelated, stale, or contradicted by the current user.
+## 1. Think Before Coding
 
-At the end of each turn:
-1. Call `save(summary=<brief summary>)`.
-2. Save only durable facts, decisions, preferences, constraints, project state, or important outcomes.
-3. Do not save the full assistant response.
-4. Do not save secrets, API keys, passwords, tokens, or private credentials.
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
 
-For long pasted docs/logs/code:
-- Use `remember_document(text=<content>)`.
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
 
-For removal:
-1. Call `forget_preview(...)` first.
-2. Show the user what would be forgotten.
-3. Call `forget_confirm(...)` only after explicit user approval.
+## 2. Simplicity First
 
-Use `memory_stats()` only for debugging or when the user asks about memory state.
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+## 5. Memory Tool Discipline
+
+**Use memory tools deliberately. Do not confuse decay with removal.**
+
+- Automatic recall/save is handled by hooks when available.
+- Do not call MCP `recall` or `save` if hooks already handle memory.
+- Use `memory_stats` only when debugging memory state or when the user asks.
+- Use `remove_memory_preview` when the user explicitly says a remembered fact is wrong, private, harmful, stale-by-policy, or should not be used anymore.
+- Do not use removal just because a memory is old or low-value. Automatic decay handles normal staleness.
+- Always preview before removal. Show the candidate message IDs and short reason.
+- Only call `remove_memory_confirm` after the user explicitly approves the specific IDs.
+- Never hard-delete memory through MCP. Removal is tombstone-only.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

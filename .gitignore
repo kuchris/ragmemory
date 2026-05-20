@@ -9,6 +9,7 @@ novels/
 # Local secrets
 .env
 .env.*
+ragmemory.local.ini
 
 # Generated memory databases and smoke-test data
 .data/

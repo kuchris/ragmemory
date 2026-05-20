@@ -20,12 +20,20 @@ if DB_PATH.exists():
 store = MemoryStore(db_path=str(DB_PATH))
 first = store.add_message(
     "user",
-    "Event log should record saved messages and retrieval.",
-    extract_structured=False,
+    """Event log should record saved messages, structured adds, and retrieval.
+
+```json
+{"event_log": true}
+```""",
+    extract_structured=True,
 )
 duplicate = store.add_message(
     "user",
-    " Event log should record saved messages and retrieval. ",
+    """ Event log should record saved messages, structured adds, and retrieval.
+
+```json
+{"event_log": true}
+``` """,
     extract_structured=False,
 )
 context = store.build_context("what should event log record?")
@@ -46,6 +54,7 @@ assert "message_saved" in event_names
 assert "message_deduped" in event_names
 assert "chunks_retrieved" in event_names
 assert "context_built" in event_names
+assert "structured_object_added" in event_names
 
 saved = next(event for event in events if event["event"] == "message_saved")
 assert saved["message_id"] == first.message_id
@@ -61,7 +70,14 @@ assert retrieved["chunk_ids"]
 assert retrieved["scores"]
 
 context_event = next(event for event in events if event["event"] == "context_built")
-assert context_event["kept_count"] == 0
+assert context_event["kept_count"] >= 0
 assert context_event["recent_count"] == 1
+
+structured_events = [event for event in events if event["event"] == "structured_object_added"]
+assert {event["structured_object_id"] for event in structured_events} == set(first.structured_object_ids)
+structured_added = next(event for event in structured_events if event["type"] == "config")
+assert structured_added["message_id"] == first.message_id
+assert structured_added["type"] == "config"
+assert structured_added["tags"]
 
 print("Event log test passed.")

@@ -23,8 +23,8 @@ memory.RECENT_MESSAGES = 0
 
 try:
     store = MemoryStore(db_path=str(DB_PATH))
-    store.retrieve_structured = lambda _query: []
-    store.retrieve = lambda _query: [
+    store.retrieve_structured = lambda _query, top_k=memory.STRUCTURED_TOP_K: []
+    store.retrieve = lambda _query, top_k=memory.RETRIEVE_TOP_K: [
         RetrievedChunk(
             id="low-score",
             text="LOW_SCORE critical warning note.",

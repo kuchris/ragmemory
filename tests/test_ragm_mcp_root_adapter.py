@@ -25,6 +25,7 @@ for path in (DB_PATH, OBSIDIAN_PATH):
 
 os.environ["RAGMEMORY_DB_PATH"] = str(DB_PATH)
 os.environ["RAGMEMORY_OBSIDIAN_PATH"] = str(OBSIDIAN_PATH)
+os.environ["NVIDIA_API_KEY"] = ""
 sys.path.insert(0, str(ROOT))
 
 stdout = io.StringIO()
@@ -65,7 +66,13 @@ if prompt.stdout.strip():
 
 stop = subprocess.run(
     [sys.executable, "ragm_mcp/hooks/stop.py"],
-    input=json.dumps({"last_assistant_message": "adapter hook assistant"}),
+    input=json.dumps({
+        "last_assistant_message": """adapter hook assistant should extract this config.
+
+```json
+{"adapter_hook": true}
+```"""
+    }),
     text=True,
     capture_output=True,
     env=env,
@@ -76,5 +83,7 @@ assert (DB_PATH / "hook_debug.jsonl").exists()
 assert (OBSIDIAN_PATH / "index.md").exists()
 assert (OBSIDIAN_PATH / "active/messages/msg-000002.md").exists()
 assert (OBSIDIAN_PATH / "active/messages/msg-000003.md").exists()
+assert (DB_PATH / "structured_memory.jsonl").exists()
+assert any((OBSIDIAN_PATH / "active/structured").glob("*.md"))
 
 print("RagM MCP root adapter test passed.")

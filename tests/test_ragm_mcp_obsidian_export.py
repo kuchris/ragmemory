@@ -23,6 +23,9 @@ for path in (DB_PATH, OUT_PATH):
 
 os.environ["RAGMEMORY_DB_PATH"] = str(DB_PATH)
 os.environ["RAGMEMORY_OBSIDIAN_PATH"] = str(OUT_PATH)
+os.environ["RAGMEMORY_MCP_TOOLS_ENABLE_SAVE"] = "true"
+os.environ["RAGMEMORY_MCP_TOOLS_ENABLE_TOMBSTONE"] = "true"
+os.environ["NVIDIA_API_KEY"] = ""
 sys.path.insert(0, str(ROOT))
 
 stdout = io.StringIO()
@@ -32,24 +35,32 @@ with contextlib.redirect_stdout(stdout):
 assert stdout.getvalue() == ""
 assert server.OBSIDIAN_PATH == OUT_PATH
 
-saved = server.save("MCP_OBSIDIAN_SAVE should appear in the mirror.")
+saved = server.save("""MCP_OBSIDIAN_SAVE should appear in the mirror.
+
+```json
+{"mcp_save": true}
+```""")
 assert "Saved." in saved
 assert "Obsidian mirror updated" in saved
 assert (OUT_PATH / "index.md").exists()
 assert (OUT_PATH / "active/messages/msg-000000.md").exists()
 assert "MCP_OBSIDIAN_SAVE" in (OUT_PATH / "active/messages/msg-000000.md").read_text(encoding="utf-8")
+assert any((OUT_PATH / "active/structured").glob("*.md"))
 
 document = server.remember_document("MCP_OBSIDIAN_DOCUMENT should also export.")
 assert "Stored" in document
 assert "Obsidian mirror updated" in document
 assert (OUT_PATH / "active/messages/msg-000001.md").exists()
 
-preview = server.forget_preview(message_ids="0")
-assert "Forget preview:" in preview
+preview = server.remove_memory_preview(message_ids="0")
+assert "Remove preview:" in preview
 assert (OUT_PATH / "active/messages/msg-000000.md").exists()
 
-confirm = server.forget_confirm(message_ids="0")
-assert "Forget confirmed:" in confirm
+confirm = server.remove_memory_confirm(
+    message_ids="0",
+    reason="User explicitly requested removal during Obsidian export test.",
+)
+assert "Remove confirmed:" in confirm
 assert "Obsidian mirror updated" in confirm
 assert not (OUT_PATH / "active/messages/msg-000000.md").exists()
 forgotten = OUT_PATH / "forgotten/messages/msg-000000.md"
