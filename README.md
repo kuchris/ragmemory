@@ -5,6 +5,8 @@ RagMemory gives Codex a local memory that survives across turns.
 It stores your conversation locally, recalls useful context before a new prompt,
 and keeps a generated Obsidian mirror so you can inspect what was remembered.
 
+![Obsidian graph view](obsidian.png)
+
 ## What It Does
 
 - Remembers useful chat context across Codex sessions.

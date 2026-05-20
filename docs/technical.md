@@ -1,88 +1,136 @@
 # RagMemory Technical Notes
 
-This document keeps implementation details out of the user-facing README.
+This document explains the technical method behind RagMemory. The README is for
+normal use; this file is for understanding how the memory system works.
 
-## Core Idea
+## Technical Main
 
-RagMemory stores memory in layers:
+RagMemory is a local persistent-memory layer for Codex.
 
-| Layer | Purpose |
-|------|---------|
-| Raw log | Source-of-truth messages in `state.sqlite`. |
-| Raw chunks | Searchable Chroma chunks for broad recall. |
-| Structured memory | High-signal objects such as decisions, constraints, configs, tables, and open questions. |
-| Recent window | Latest messages included directly for short-term continuity. |
-| Removal ledger | Retrieved chunks that were dropped because the context budget was full. |
-
-The key rule:
+The main idea is:
 
 ```text
-raw chunks preserve recall
-structured memory preserves meaning
-exact artifacts preserve usable source
+chat messages -> local memory store -> retrieval context -> next model prompt
 ```
 
-## Save Pipeline
+The model does not receive the full conversation every turn. Instead, RagMemory
+stores the conversation locally, searches for relevant memory before each new
+prompt, and injects only a small context bundle.
 
-When saving a message:
+The core design has three separate roles:
+
+| Part | Role |
+|------|------|
+| RagMemory DB | Source of truth for memory and recall. |
+| Codex hooks | Automatic remember and recall path. |
+| Obsidian export | Human-readable mirror for inspection and cleanup. |
+
+The Obsidian vault is not the memory engine. It is a generated view of what the
+engine already stores.
+
+## Memory Method
+
+RagMemory uses layered memory instead of one single summary.
+
+| Layer | Stored as | Purpose |
+|-------|-----------|---------|
+| Raw messages | SQLite `messages` table | Source of truth; never summarized away. |
+| Raw chunks | Chroma collection + BM25 index | Broad semantic and keyword recall. |
+| Structured memory | JSONL + Chroma collection | Durable facts such as decisions and preferences. |
+| Recent window | Latest raw messages | Short-term continuity. |
+| Removal ledger | `ledger.json` | Overflow chunks dropped from the prompt budget. |
+| Metadata | SQLite `memory_metadata` table | Decay, access count, tombstone, pin state. |
+
+The key rule is:
+
+```text
+raw messages preserve evidence
+raw chunks preserve recall
+structured memory preserves meaning
+metadata controls ranking
+```
+
+RagMemory does not depend on one compressed conversation summary. Raw messages
+stay as the recoverable ground truth, while structured memory is only an
+additional high-signal layer.
+
+## Save Method
+
+When a message is saved:
 
 ```text
 message
-  -> append raw log
-  -> split into chunks
-  -> embed chunks in Chroma
+  -> allocate message_id in SQLite
+  -> store raw message in state.sqlite
+  -> split text into chunks
+  -> embed chunks into Chroma
+  -> add chunks to BM25
+  -> create memory_metadata row
   -> extract exact artifacts by code
-  -> optionally extract structured memory with NVIDIA API
-  -> store structured objects in JSONL + Chroma
-  -> log structured_object_added events
+  -> optionally extract structured memory with an LLM
+  -> log events to events.jsonl
 ```
 
-Structured extraction can run immediately or be queued for background draining.
-The Codex Stop hook saves assistant messages, drains up to 3 pending extraction
-jobs, and refreshes the Obsidian export.
+The `message_id` is the stable join key between raw messages, chunks,
+structured objects, metadata, events, and Obsidian notes.
 
-## Recall Pipeline
+Structured extraction can run immediately or as a background job. In the Codex
+hook path, user and assistant messages are saved first, then the Stop hook drains
+a small number of pending structured extraction jobs.
 
-When answering a question:
+## Recall Method
+
+Before a new Codex prompt, the UserPromptSubmit hook builds a context bundle:
 
 ```text
-question
+new prompt
   -> retrieve structured memory
-  -> retrieve raw chunk candidates with embedding search + BM25
-  -> rerank raw chunks by relevance x decay strength
+  -> retrieve raw chunks with vector search
+  -> retrieve raw chunks with BM25 keyword search
+  -> merge and rerank candidates
+  -> apply decay-aware score
   -> add recent messages
-  -> drop overflow chunks into ledger.json
-  -> mark injected raw memories as accessed
-  -> send context to the model
+  -> fit raw chunks into token budget
+  -> inject context into Codex
+  -> mark injected memories as accessed
 ```
 
-Default retrieval constants live in `src/ragmemory/memory.py`, but the hook path
-can override the main recall limits from `ragmemory.local.ini`:
+Raw chunk retrieval combines:
+
+- Chroma vector search for semantic similarity.
+- BM25 for exact keyword matching.
+- Reciprocal-rank fusion to merge both result lists.
+- Decay-aware reranking so stale unused memory naturally drops.
+
+The hook recall limits are configurable in `ragmemory.local.ini`:
 
 ```ini
 [recall]
-context_token_budget = 900
-retrieve_top_k = 3
-structured_top_k = 2
-recent_messages = 4
+context_token_budget = 500
+retrieve_top_k = 2
+structured_top_k = 1
+recent_messages = 2
 include_recent = true
 include_structured = true
 ```
 
-| Constant | Meaning |
-|----------|---------|
-| `CONTEXT_TOKEN_BUDGET` | Approximate context budget for memory injection. |
-| `STRUCTURED_TOP_K` | Number of structured objects retrieved. |
-| `RECENT_MESSAGES` | Number of recent raw messages included. |
-| `RETRIEVE_TOP_K` | Number of raw chunks kept after retrieval. |
+The default constants still exist in `src/ragmemory/memory.py`, but the hook path
+overrides them from local config.
 
-## Forgetting Model
+## Forgetting Method
 
-Automatic forgetting is retrieval decay, not deletion.
+RagMemory has two different concepts that should not be confused:
 
-Raw messages stay in SQLite. Chroma stays a content index. `memory_metadata`
-tracks:
+| Word | Meaning |
+|------|---------|
+| Forgetting | Automatic decay-aware ranking. |
+| Removal | Manual tombstone for wrong, private, or harmful memory. |
 
+Automatic forgetting does not delete data. It changes retrieval priority.
+
+Each memory has metadata:
+
+- `created_at`
 - `last_accessed_at`
 - `access_count`
 - `base_importance`
@@ -91,19 +139,17 @@ tracks:
 - `superseded_by`
 - `tombstoned_at`
 
-Old unused memories rank lower over time. Memories injected into context get
-their access timestamp refreshed.
+The retrieval score is adjusted by decay strength. Old unused memory becomes
+less likely to appear. If it is retrieved and injected again, its access time is
+refreshed, so useful memory can stay active.
 
-Manual removal is separate. It tombstones wrong, private, or harmful records so
-they no longer appear in retrieval.
+Manual removal is tombstone-only. Tombstoned records stop appearing in recall
+and move to `forgotten/` in the Obsidian mirror, but the raw data is still kept
+for audit and recovery.
 
-## Structured Memory
+## Structured Memory Method
 
-Structured objects are stored in:
-
-```text
-<db_path>/structured_memory.jsonl
-```
+Structured memory is used for durable, high-signal objects.
 
 Supported object types:
 
@@ -119,92 +165,58 @@ open_question
 identity
 ```
 
-Exact fenced configs, tables, Mermaid diagrams, and code blocks are detected by
-deterministic code when possible. The LLM extractor is for semantic objects such
-as decisions, preferences, constraints, and open questions.
+There are two extraction paths:
 
-Structured object additions are logged to `events.jsonl` as
-`structured_object_added` with:
+| Extractor | What it handles |
+|-----------|-----------------|
+| Deterministic extractor | Exact fenced configs, code blocks, tables, Mermaid diagrams. |
+| LLM extractor | Semantic facts such as decisions, preferences, constraints, open questions. |
 
-- structured object ID
+Structured objects are stored in:
+
+```text
+<db_path>/structured_memory.jsonl
+```
+
+Each structured object keeps:
+
+- object ID
 - type
+- summary
+- source text
 - tags
+- importance
 - message ID
 - role
-- importance
-- `job_id` when created by background extraction
 
-This event trail is intended for future compaction dry-runs.
+Structured additions are logged as `structured_object_added` events. The event
+includes the background `job_id` when applicable, which is useful for future
+duplicate detection.
 
-## Obsidian Export
+## Hook Method
 
-The generated vault is a one-way mirror:
+Hooks are the normal automation path.
 
-```text
-.data/obsidian_memory/
-```
+| Hook | Action |
+|------|--------|
+| `UserPromptSubmit` | Recall memory, inject context, save the user message. |
+| `Stop` | Save assistant response, drain structured jobs, export Obsidian mirror. |
 
-Main folders:
-
-| Folder | Meaning |
-|--------|---------|
-| `active/messages/` | Active raw message notes. |
-| `active/structured/` | Active structured memory notes. |
-| `forgotten/` | Tombstoned records. |
-| `topics/` | Generated semantic topic hubs. |
-| `files/` | Optional generated file/path hubs from explicit source paths. |
-| `profile/` | Generated profile/user hub for preference and identity memory. |
-| `maps/` | Timeline and turn navigation notes. |
-
-Chronology is stored as frontmatter, not body wikilinks. Message bodies link to
-structured memory objects; structured objects link to semantic hubs.
-
-Timeline and turns pages are marked with:
+This gives the practical behavior:
 
 ```text
-cssclasses: ["navigation"]
+before user prompt reaches model -> recall
+after assistant finishes -> remember
 ```
 
-Raw message notes with no structured object links are marked with:
+The hook path bypasses MCP tool gates because hooks are the trusted automatic
+pipeline.
 
-```text
-cssclasses: ["memory-message", "memory-unlinked"]
-```
+## MCP Method
 
-Useful Obsidian graph filter:
+MCP is optional when hooks are installed.
 
-```text
--["cssclasses":"navigation"] -["cssclasses":"memory-unlinked"]
-```
-
-Topic hubs are filtered at export time by `[obsidian.topics]` in
-`ragmemory.local.ini`:
-
-- denylisted artifact/type/language tags are hidden
-- allowlisted tags are always shown
-- other tags must recur at least `min_count` times
-
-Raw structured-memory tags stay intact.
-
-File hubs are opt-in. They are disabled by default because path nodes can clutter
-the graph:
-
-```ini
-[obsidian.files]
-enable = false
-```
-
-## MCP And Hooks
-
-Hooks are the recommended path for Codex:
-
-- `UserPromptSubmit` calls `build_recall_context(...)` directly.
-- `UserPromptSubmit` saves the user message.
-- `Stop` saves the assistant message.
-- `Stop` drains pending structured extraction jobs.
-- `Stop` exports the Obsidian mirror.
-
-MCP is optional. With hooks installed, recommended flags are:
+Recommended local config:
 
 ```ini
 [mcp.tools]
@@ -213,20 +225,89 @@ enable_save = false
 enable_tombstone = true
 ```
 
-That keeps MCP recall/save from duplicating hook work while preserving manual
-inspection/removal tools.
+The reason is:
+
+- Hooks already own automatic recall and save.
+- MCP recall/save can duplicate token usage or writes.
+- MCP remains useful for inspection and manual removal tools.
+
+The safe removal surface is:
+
+```text
+remove_memory_preview(...)
+remove_memory_confirm(message_ids, reason)
+```
+
+`remove_memory_confirm` requires explicit message IDs, a reason, a max of three
+IDs, and the tombstone flag enabled. It never hard-deletes memory.
+
+## Obsidian Method
+
+The Obsidian vault is generated from the DB.
+
+```text
+.data/obsidian_memory/
+```
+
+It is a mirror, not a source of truth. Edit the RagMemory data path or removal
+tools, not generated Markdown files.
+
+Main generated folders:
+
+| Folder | Meaning |
+|--------|---------|
+| `active/messages/` | Active raw message notes. |
+| `active/structured/` | Active structured memory notes. |
+| `forgotten/` | Tombstoned records. |
+| `topics/` | Generated topic hubs. |
+| `files/` | Optional file/path hubs. |
+| `profile/` | User profile and identity/preference hub. |
+| `maps/` | Timeline and navigation pages. |
+
+The graph is intentionally filtered:
+
+- chronology links are frontmatter, not body wikilinks
+- raw messages with no structured links get `memory-unlinked`
+- file hubs are off by default
+- topic hubs use allowlist, denylist, and `min_count`
+
+Useful Obsidian graph filter:
+
+```text
+-["cssclasses":"navigation"] -["cssclasses":"memory-unlinked"]
+```
+
+## Storage Files
+
+The active DB folder usually contains:
+
+| File | Purpose |
+|------|---------|
+| `state.sqlite` | Raw messages, metadata, tombstone state, next message ID. |
+| `chroma.sqlite3` | Chroma vector collections. |
+| `structured_memory.jsonl` | Structured memory objects. |
+| `ledger.json` | Chunks dropped from context budget. |
+| `events.jsonl` | Audit and observability event log. |
+| `hook_debug.jsonl` | Hook execution debug records. |
+
+Local config:
+
+| File | Purpose |
+|------|---------|
+| `ragmemory.local.ini` | Private local settings and API key. Ignored by git. |
+| `ragmemory.example.ini` | Safe template committed to git. |
 
 ## Important Scripts
 
 | File | Purpose |
 |------|---------|
-| `scripts/chat.py` | CLI chat using NVIDIA API and RagMemory context. |
-| `scripts/ask_memory.py` | Prints retrieved context for preset questions. |
-| `scripts/view_chunks.py` | Shows raw Chroma chunks. |
-| `scripts/inspect_events.py` | Filters the JSONL event log. |
-| `scripts/export_obsidian.py` | Exports the generated Obsidian mirror. |
-| `scripts/check_obsidian_graph.py` | Checks topic count, denylisted hubs, and phantom wikilinks. |
-| `scripts/remove_memory.py` | Previews/confirms tombstones for wrong, private, or harmful memory. |
+| `scripts/inspect_events.py` | Inspect event log. |
+| `scripts/export_obsidian.py` | Generate Obsidian mirror. |
+| `scripts/check_obsidian_graph.py` | Smoke-test generated graph quality. |
+| `scripts/remove_memory.py` | Preview/confirm tombstone removal. |
+| `scripts/ask_memory.py` | Print retrieved context for test prompts. |
+| `scripts/view_chunks.py` | Inspect raw Chroma chunks. |
+| `scripts/chat.py` | CLI chat path. |
 
 Common commands:
 
@@ -253,37 +334,41 @@ Useful test files:
 |------|---------|
 | `tests/test_memory.py` | Basic raw retrieval behavior. |
 | `tests/test_bm25_lazy_rebuild.py` | BM25 lazy rebuild behavior. |
-| `tests/test_dedup.py` | Normalized duplicate-message skip. |
+| `tests/test_dedup.py` | Duplicate-message skip. |
 | `tests/test_sqlite_state.py` | SQLite state and concurrent writer behavior. |
 | `tests/test_background_extraction.py` | Background structured extraction. |
 | `tests/test_event_log.py` | JSONL event logging. |
 | `tests/test_export_obsidian.py` | Obsidian mirror export. |
-| `tests/test_ragm_mcp_root_adapter.py` | MCP/hooks root adapter. |
-| `tests/test_ragm_mcp_forget_tools.py` | MCP remove/tombstone wrapper. |
-| `tests/test_ragm_mcp_obsidian_export.py` | MCP-triggered Obsidian export. |
+| `tests/test_context_bundle.py` | Context budget and bundle behavior. |
 | `tests/test_decay_forgetting.py` | Decay-aware ranking and access touch. |
+| `tests/test_ragm_mcp_forget_tools.py` | MCP remove/tombstone wrapper. |
+| `tests/test_remove_memory_script.py` | CLI tombstone workflow. |
 
 `tests/test_structured_memory.py` uses the configured NVIDIA-backed extractor.
 
-## Future Compaction Plan
+## Future Compaction Method
 
 Compaction is intentionally not implemented yet.
 
-The next safe step, when real pain appears, is a read-only signal checker or
-`scripts/compact.py --dry-run`. It should report candidates without rewriting
-memory.
+The future method should be read-only first:
+
+```text
+scripts/compact.py --dry-run
+```
+
+It should report candidates without rewriting memory.
 
 Concrete triggers:
 
 - `topics/` grows above roughly 30 hubs despite topic filtering.
 - `structured_object_added` events show repeated objects on the same
   `message_id`.
-- At least 3 tag spellings normalize to the same concept.
-- At least 5 message IDs have multiple structured objects whose tags overlap by
-  more than 50%.
-- Retrieval returns several results that are obviously the same memory.
+- at least three tag spellings normalize to the same concept
+- at least five message IDs have multiple structured objects whose tags overlap
+  by more than 50%
+- retrieval returns several results that are obviously the same memory
 
-Tier 1 dry-run checks:
+Safe Tier 1 checks:
 
 - tag variant detection
 - exact duplicate structured objects
@@ -295,5 +380,10 @@ Do not add automatic LLM "sleep mode" that rewrites memory. If LLM assistance is
 added later, use it only as a bounded judge for specific duplicate,
 normalization, or supersession decisions.
 
-Compaction must preserve raw messages, source pointers, tombstone history, and
-an undo path.
+Compaction must preserve:
+
+- raw messages
+- source pointers
+- tombstone history
+- event log evidence
+- undo path
