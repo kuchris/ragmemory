@@ -9,7 +9,13 @@ import shutil
 from pathlib import Path
 
 import ragmemory.memory as memory
-from ragmemory.memory import MemoryStore, RetrievedChunk, format_for_prompt
+from ragmemory.memory import (
+    ContextBundle,
+    MemoryStore,
+    MessageRecord,
+    RetrievedChunk,
+    format_for_prompt,
+)
 
 DB_PATH = Path("./.data/chroma_context_bundle_test")
 
@@ -56,6 +62,59 @@ try:
     prompt = format_for_prompt(bundle)
     assert "KEEP context bundle winner." in prompt
     assert "DROP context bundle loser." not in prompt
+
+    noisy_bundle = ContextBundle(
+        query="token cleanup",
+        recent=[
+            MessageRecord(
+                role="user",
+                text="# Context from my IDE setup:\n\n"
+                "## Active file: ragmemory.local.ini\n\n"
+                "## Open tabs:\n"
+                "- ragmemory.local.ini: ragmemory.local.ini\n\n"
+                "## My request for Codex:\n"
+                "remember the SQLite worker plan",
+                message_id=10,
+                content_hash="recent-1",
+            ),
+            MessageRecord(
+                role="user",
+                text="btw",
+                message_id=11,
+                content_hash="recent-2",
+            ),
+        ],
+        structured=[],
+        retrieved=[],
+        ledger_recovered=[],
+        kept=[
+            RetrievedChunk(
+                id="noisy",
+                text="# Context from my IDE setup: ## Active file: ragmemory.local.ini "
+                "## Open tabs:\n"
+                "- compact_backfill.py: scripts/compact_backfill.py\n"
+                "## My request for Codex:\n"
+                "let me ask claude",
+                importance=0.5,
+                message_id=12,
+            ),
+            RetrievedChunk(
+                id="duplicate",
+                text="remember the SQLite worker plan",
+                importance=0.5,
+                message_id=13,
+            ),
+        ],
+        would_be_dropped=[],
+        token_budget=100,
+        tokens_used=1,
+    )
+    noisy_prompt = format_for_prompt(noisy_bundle)
+    assert "Context from my IDE setup" not in noisy_prompt
+    assert "Open tabs" not in noisy_prompt
+    assert "btw" not in noisy_prompt
+    assert "let me ask claude" not in noisy_prompt
+    assert noisy_prompt.count("remember the SQLite worker plan") == 1
 
     store.commit_drops(bundle)
     assert len(store.ledger) == 1

@@ -39,7 +39,7 @@ def main() -> None:
     from ragm_mcp.server import build_recall_context, export_obsidian_mirror, save_user_message
 
     context = build_recall_context(prompt)
-    save_user_message(prompt, extract_structured=False)
+    save_user_message(prompt, extract_structured="background")
     export_obsidian_mirror()
     if context:
         sys.stdout.write(json.dumps({

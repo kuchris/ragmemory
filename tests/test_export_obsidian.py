@@ -38,24 +38,49 @@ with sqlite3.connect(DB_PATH / "state.sqlite") as conn:
             text TEXT NOT NULL,
             content_hash TEXT NOT NULL,
             created_at TEXT NOT NULL,
+            compact_text TEXT,
+            compact_status TEXT,
             tombstoned INTEGER NOT NULL DEFAULT 0
         )
         """
     )
     conn.executemany(
         """
-        INSERT INTO messages(message_id, role, text, content_hash, created_at, tombstoned)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO messages(
+            message_id, role, text, content_hash, created_at,
+            compact_text, compact_status, tombstoned
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
-            (1, "user", "Active mirror message.", "hash-active", "2026-01-01T00:00:00+00:00", 0),
-            (2, "assistant", "Forgotten mirror message.", "hash-forgotten", "2026-01-02T00:00:00+00:00", 1),
+            (
+                1,
+                "user",
+                "Active mirror message raw should stay in SQLite.",
+                "hash-active",
+                "2026-01-01T00:00:00+00:00",
+                "Compact active mirror message. See evidence[python:abc123abc123].",
+                "ok",
+                0,
+            ),
+            (
+                2,
+                "assistant",
+                "Forgotten mirror message.",
+                "hash-forgotten",
+                "2026-01-02T00:00:00+00:00",
+                None,
+                None,
+                1,
+            ),
             (
                 3,
                 "user",
                 "Second active mirror message with example [[files/unwanted-test-hub]].",
                 "hash-active-two",
                 "2026-01-03T00:00:00+00:00",
+                None,
+                None,
                 0,
             ),
         ],
@@ -77,10 +102,11 @@ structured = [
         "type": "code_reference",
         "summary": "Memory code reference.",
         "source_text": "Review src/ragmemory/memory.py before changing retrieval.",
-        "tags": ["RagMemory"],
+        "tags": ["python", "RagMemory"],
         "importance": 0.9,
         "message_id": 1,
         "role": "user",
+        "content_hash": "abc123abc123",
     },
     {
         "id": "sm_forgotten",
@@ -189,6 +215,11 @@ second_active_text = second_active_msg.read_text(encoding="utf-8")
 assert "[[sm_active]]" in active_text
 assert "[[sm_code]]" in active_text
 assert "[[msg-" not in active_text
+assert "Text source: `compact_text`" in active_text
+assert "Compact active mirror message." in active_text
+assert "## Evidence References" in active_text
+assert "`evidence[python:abc123abc123]` -> [[sm_code]]" in active_text
+assert "raw should stay in SQLite" not in active_text
 assert "next_message: \"msg-000002\"" in active_text
 assert "previous_message: \"msg-000001\"" in forgotten_text
 assert "next_message: \"msg-000003\"" in forgotten_text
@@ -202,6 +233,9 @@ raw_only_text = module.message_markdown(
 assert "cssclasses: [\"memory-message\", \"memory-unlinked\"]" in raw_only_text
 assert "[[msg-000001]]" in active_structured.read_text(encoding="utf-8")
 code_text = code_structured.read_text(encoding="utf-8")
+assert "content_hash: \"abc123abc123\"" in code_text
+assert "evidence_ref: \"evidence[python:abc123abc123]\"" in code_text
+assert "- Evidence ref: `evidence[python:abc123abc123]`" in code_text
 assert "[[topics/ragmemory]]" in code_text
 assert "[[files/src-ragmemory-memory-py]]" in code_text
 assert "[[topics/mirror]]" in active_structured.read_text(encoding="utf-8")
@@ -228,6 +262,7 @@ assert timeline.exists()
 timeline_text = timeline.read_text(encoding="utf-8")
 assert "cssclasses: [\"navigation\"]" in timeline_text
 assert "[[msg-000001]]" in timeline_text
+assert "Compact active mirror message." in timeline_text
 assert "[[msg-000003]]" in timeline_text
 assert "[[msg-000002]]" not in timeline_text
 turns_text = turns.read_text(encoding="utf-8")

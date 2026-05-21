@@ -81,12 +81,11 @@ Rules:
 store.run_pending_extractions(limit=None) -> list[str]
 ```
 
-Runs queued in-process structured extraction jobs and returns created structured
+Runs queued SQLite structured extraction jobs and returns created structured
 object IDs.
 
 Rules:
 
-- Jobs are in-memory only in the current implementation.
 - `limit` caps the number of jobs processed.
 - Tombstoned messages are skipped.
 
@@ -222,7 +221,7 @@ These ideas are intentionally not part of the current implemented API:
 - `filters` on `build_context_bundle` and `search`.
 - Caller-provided metadata on `add_message`.
 - Semantic `forget(query=...)`.
-- Durable background extraction jobs and worker threads.
+- Worker lifecycle controls beyond the manual `scripts/run_worker.py`.
 
 ## MCP Mapping
 
@@ -254,7 +253,6 @@ The MCP response can remain a string, but the library should not be string-only.
 
 - Should `remember_document` be a public fifth method or a thin wrapper around
   `add_message(role="document", ...)`?
-- Should background extraction jobs become durable across process restarts?
 - Should tombstones be compacted manually only, or by an explicit retention
   policy later?
 - What is the first stable storage version number?

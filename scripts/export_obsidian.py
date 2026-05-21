@@ -24,6 +24,7 @@ PATH_RE = re.compile(
     r"\b(?:[\w.-]+/){1,8}[\w.-]+\."
     r"(?:py|ts|js|rs|go|md|json|yaml|yml|toml|sql|sh|css|html|tsx|jsx)\b"
 )
+EVIDENCE_REF_RE = re.compile(r"\bevidence\[([a-z]+):([a-f0-9]{12})\]")
 FILE_HUB_TYPES = {"code_reference", "config"}
 PROFILE_HUB_TYPES = {"preference", "identity"}
 DEFAULT_TOPIC_MIN_COUNT = 2
@@ -62,6 +63,20 @@ class MessageRow:
     content_hash: str
     created_at: str | None
     tombstoned: bool
+    compact_text: str | None = None
+    compact_status: str | None = None
+
+
+def message_display_text(message: MessageRow) -> str:
+    if message.compact_status == "ok" and message.compact_text and message.compact_text.strip():
+        return message.compact_text
+    return message.text
+
+
+def message_text_source(message: MessageRow) -> str:
+    if message.compact_status == "ok" and message.compact_text and message.compact_text.strip():
+        return "compact_text"
+    return "raw_text"
 
 
 @dataclass
@@ -74,6 +89,7 @@ class StructuredRow:
     importance: float
     message_id: int
     role: str
+    content_hash: str | None = None
 
 
 @dataclass
@@ -153,9 +169,16 @@ def load_messages(db_path: Path) -> list[MessageRow]:
     if not state_db.exists():
         return []
     with sqlite3.connect(state_db) as conn:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        compact_text_expr = "compact_text" if "compact_text" in columns else "NULL"
+        compact_status_expr = "compact_status" if "compact_status" in columns else "NULL"
         rows = conn.execute(
-            """
-            SELECT message_id, role, text, content_hash, created_at, tombstoned
+            f"""
+            SELECT
+                message_id, role, text, content_hash, created_at, tombstoned,
+                {compact_text_expr}, {compact_status_expr}
             FROM messages
             ORDER BY message_id
             """
@@ -168,8 +191,13 @@ def load_messages(db_path: Path) -> list[MessageRow]:
             content_hash=content_hash,
             created_at=created_at,
             tombstoned=bool(tombstoned),
+            compact_text=compact_text,
+            compact_status=compact_status,
         )
-        for message_id, role, text, content_hash, created_at, tombstoned in rows
+        for (
+            message_id, role, text, content_hash, created_at, tombstoned,
+            compact_text, compact_status,
+        ) in rows
     ]
 
 
@@ -192,6 +220,7 @@ def load_structured(db_path: Path) -> list[StructuredRow]:
                 importance=float(item.get("importance", 0.0)),
                 message_id=int(item["message_id"]),
                 role=str(item["role"]),
+                content_hash=str(item.get("content_hash", "")).strip() or None,
             )
         )
     return rows
@@ -319,8 +348,53 @@ def escape_raw_wikilinks(text: str) -> str:
     return text.replace("[[", "&#91;&#91;").replace("]]", "&#93;&#93;")
 
 
+def evidence_ref_type(obj: StructuredRow) -> str:
+    for tag in obj.tags:
+        canonical = canonical_tag(tag)
+        if canonical and canonical != "code-reference":
+            return canonical.replace("-", "")
+    return canonical_tag(obj.type).replace("-", "") or "text"
+
+
+def evidence_marker(obj: StructuredRow) -> str | None:
+    if not obj.content_hash:
+        return None
+    return f"evidence[{evidence_ref_type(obj)}:{obj.content_hash}]"
+
+
+def evidence_lookup(structured: list[StructuredRow]) -> dict[str, list[StructuredRow]]:
+    lookup: dict[str, list[StructuredRow]] = {}
+    for obj in structured:
+        marker = evidence_marker(obj)
+        if marker:
+            lookup.setdefault(marker, []).append(obj)
+    return lookup
+
+
+def evidence_refs_for_message(message: MessageRow, structured: list[StructuredRow]) -> list[tuple[str, StructuredRow | None]]:
+    markers = [
+        f"evidence[{ref_type}:{content_hash}]"
+        for ref_type, content_hash in EVIDENCE_REF_RE.findall(message_display_text(message))
+    ]
+    if not markers:
+        return []
+    lookup = evidence_lookup(structured)
+    refs = []
+    seen = set()
+    for marker in markers:
+        if marker in seen:
+            continue
+        seen.add(marker)
+        matches = lookup.get(marker, [])
+        obj = next((item for item in matches if item.message_id == message.message_id), None)
+        if obj is None and matches:
+            obj = matches[0]
+        refs.append((marker, obj))
+    return refs
+
+
 def message_preview(message: MessageRow, limit: int = 120) -> str:
-    return escape_raw_wikilinks(" ".join(message.text.split())[:limit])
+    return escape_raw_wikilinks(" ".join(message_display_text(message).split())[:limit])
 
 
 def hubs_for_structured(
@@ -414,6 +488,8 @@ def message_markdown(
                 "status": "forgotten" if message.tombstoned else "active",
                 "created_at": message.created_at,
                 "content_hash": message.content_hash,
+                "text_source": message_text_source(message),
+                "compact_status": message.compact_status,
                 "structured_objects": [structured_stem(obj.id) for obj in related],
                 "previous_message": message_stem(previous_message.message_id) if previous_message else None,
                 "next_message": message_stem(next_message.message_id) if next_message else None,
@@ -428,9 +504,19 @@ def message_markdown(
     ]
     if message.created_at:
         parts.append(f"- Created: `{message.created_at}`")
+    parts.append(f"- Text source: `{message_text_source(message)}`")
     if related:
         parts.append("- Structured: " + ", ".join(wikilink(structured_stem(obj.id)) for obj in related))
-    parts.extend(["", "## Text", "", escape_raw_wikilinks(message.text.strip()), ""])
+    parts.extend(["", "## Text", "", escape_raw_wikilinks(message_display_text(message).strip()), ""])
+    evidence_refs = evidence_refs_for_message(message, structured)
+    if evidence_refs:
+        parts.extend(["## Evidence References", ""])
+        for marker, obj in evidence_refs:
+            if obj:
+                parts.append(f"- `{marker}` -> {wikilink(structured_stem(obj.id))}")
+            else:
+                parts.append(f"- `{marker}` -> unresolved")
+        parts.append("")
     return "\n".join(parts)
 
 
@@ -448,6 +534,7 @@ def structured_markdown(
     topic_hubs = [hub for hub in hubs if hub.hub_type == "topic"]
     file_hubs = [hub for hub in hubs if hub.hub_type == "file"]
     profile_hubs = [hub for hub in hubs if hub.hub_type == "profile"]
+    marker = evidence_marker(obj)
     parts = [
         frontmatter(
             {
@@ -457,6 +544,8 @@ def structured_markdown(
                 "message_id": obj.message_id,
                 "role": obj.role,
                 "importance": obj.importance,
+                "content_hash": obj.content_hash,
+                "evidence_ref": marker,
                 "cssclasses": ["memory-structured"],
             }
         ),
@@ -470,6 +559,8 @@ def structured_markdown(
     ]
     if obj.tags:
         parts.append("- Tags: " + ", ".join(f"`{tag}`" for tag in obj.tags))
+    if marker:
+        parts.append(f"- Evidence ref: `{marker}`")
     if topic_hubs:
         parts.append("- Topics: " + ", ".join(wikilink(hub.stem) for hub in topic_hubs))
     if file_hubs:

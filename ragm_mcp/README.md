@@ -168,8 +168,9 @@ Codex usually works better with the direct hook setup in
 `ragm_mcp/hooks/README.md`, but the MCP server remains available for clients
 that prefer explicit memory tools.
 
-The direct Stop hook saves assistant messages with structured extraction queued
-and drains up to 3 pending extraction jobs before exporting the Obsidian mirror.
+The direct hooks save messages and enqueue structured extraction/compaction
+jobs. Run `uv run python scripts/run_worker.py` in another terminal to process
+those jobs without making the hooks wait on LLM API calls.
 
 ## Agent Instructions
 

@@ -75,8 +75,8 @@ The `message_id` is the stable join key between raw messages, chunks,
 structured objects, metadata, events, and Obsidian notes.
 
 Structured extraction can run immediately or as a background job. In the Codex
-hook path, user and assistant messages are saved first, then the Stop hook drains
-a small number of pending structured extraction jobs.
+hook path, user and assistant messages are saved first, then structured
+extraction and compaction jobs are queued in SQLite for `scripts/run_worker.py`.
 
 ## Recall Method
 
@@ -200,7 +200,7 @@ Hooks are the normal automation path.
 | Hook | Action |
 |------|--------|
 | `UserPromptSubmit` | Recall memory, inject context, save the user message. |
-| `Stop` | Save assistant response, drain structured jobs, export Obsidian mirror. |
+| `Stop` | Save assistant response, enqueue background jobs, export Obsidian mirror. |
 
 This gives the practical behavior:
 

@@ -23,7 +23,7 @@ Do not commit that file. It is machine-local and contains your local checkout pa
 
 - Runs when Codex is about to end its turn.
 - Saves the latest assistant message to RagMemory.
-- Queues assistant structured extraction and drains up to 3 pending extraction jobs.
+- Queues assistant structured extraction/compaction jobs.
 - Writes a small debug record to `.data/chroma_db/hook_debug.jsonl`.
 
 Both hooks write through the same backend as the MCP server:
@@ -36,8 +36,9 @@ Both hooks write through the same backend as the MCP server:
 
 The MCP server does not need to be running for these hook scripts. They import
 the local MCP adapter, which uses the hardened `ragmemory.MemoryStore` package.
-The hook process is short-lived, so Codex hooks save raw memory only; the
-long-running MCP server can use in-process background extraction.
+The hook process is short-lived, so hooks enqueue durable SQLite jobs and return
+without waiting on LLM API calls. Run `uv run python scripts/run_worker.py` to
+process queued jobs.
 
 ## Files
 

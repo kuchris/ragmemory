@@ -106,12 +106,10 @@ def main() -> None:
 
         from ragm_mcp.server import (
             export_obsidian_mirror,
-            run_pending_structured_extractions,
             save_assistant_message,
         )
 
-        save_assistant_message(message)
-        run_pending_structured_extractions(limit=3)
+        save_assistant_message(message, extract_structured="background")
         export_obsidian_mirror()
 
     write_debug(payload, bool(message))

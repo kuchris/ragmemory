@@ -75,7 +75,12 @@ def run_pending_structured_extractions(limit: int = 3) -> list[str]:
     return quiet_call(store.run_pending_extractions, limit=limit)
 
 
+def run_pending_message_compactions(limit: int = 3) -> list[int]:
+    return quiet_call(store.run_pending_compactions, limit=limit)
+
+
 def stats() -> dict:
+    job_counts = quiet_call(store.job_counts)
     return {
         "db_path": str(DB_PATH),
         "obsidian_path": str(OBSIDIAN_PATH),
@@ -85,7 +90,9 @@ def stats() -> dict:
         "bm25_indexed": len(store.bm25),
         "ledger_entries": len(store.ledger),
         "structured_objects": len(store.structured),
-        "pending_extractions": len(store._pending_extractions),
+        "pending_jobs": job_counts.get("pending", 0),
+        "running_jobs": job_counts.get("running", 0),
+        "failed_jobs": job_counts.get("failed", 0),
     }
 
 
@@ -351,7 +358,8 @@ def memory_stats() -> str:
         f"DB: {s['db_path']} | Chunks: {s['chunks']} | "
         f"Obsidian: {s['obsidian_path']} | "
         f"Next message ID: {s['next_message_id']} | Messages: {s['messages']} | "
-        f"Structured: {s['structured_objects']} | Pending extraction jobs: {s['pending_extractions']} | "
+        f"Structured: {s['structured_objects']} | Pending jobs: {s['pending_jobs']} | "
+        f"Running jobs: {s['running_jobs']} | Failed jobs: {s['failed_jobs']} | "
         f"Ledger: {s['ledger_entries']}"
     )
 

@@ -1,5 +1,5 @@
 """
-Verify in-process background structured extraction.
+Verify queued background structured extraction.
 
 Run:
     $env:PYTHONIOENCODING='utf-8'

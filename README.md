@@ -42,6 +42,14 @@ Edit `ragmemory.local.ini` and add your API key:
 [structured_memory]
 api_key = your-nvidia-api-key
 model = minimaxai/minimax-m2.7
+
+[compact]
+enable = true
+model = minimaxai/minimax-m2.7
+min_chars = 1500
+max_chars = 30000
+target_ratio = 0.35
+mode = background
 ```
 
 `ragmemory.local.ini` is ignored by git. Do not commit it.
@@ -59,8 +67,19 @@ After the hooks are installed:
 - `UserPromptSubmit` recalls memory and injects it into Codex.
 - `UserPromptSubmit` saves your user prompt.
 - `Stop` saves the assistant response.
-- `Stop` runs a few pending structured extraction jobs.
 - `Stop` refreshes the Obsidian mirror.
+- Long-running structured extraction and compaction jobs are handled by the
+  manual worker: `uv run python scripts/run_worker.py`.
+
+On Windows you can also start the worker by double-clicking:
+
+```text
+start_worker.bat
+```
+
+Keep the worker running while chatting. Stop it before a large manual
+`compact_backfill.py` run if you want to avoid duplicate API calls or NVIDIA
+rate limits.
 
 You should see injected context like this at the start of a turn:
 
@@ -157,6 +176,17 @@ Open this folder in Obsidian:
 .data/obsidian_memory
 ```
 
+Compacted messages may contain evidence references like:
+
+```text
+evidence[text:874b3468c9f7]
+```
+
+These are deterministic pointers to exact structured evidence blocks. In the
+Obsidian mirror, message notes include an `Evidence References` section that
+links each marker to the matching structured note. Structured notes also expose
+`content_hash` and `evidence_ref` in frontmatter so the hash is searchable.
+
 ## Remove Bad Memory
 
 Use removal only for memory that is wrong, private, harmful, or should not be
@@ -207,36 +237,40 @@ ledger.json
 events.jsonl
 ```
 
-## Future Plan: Compaction
+## Message Compaction
 
-Compaction is not implemented yet.
+Raw messages stay as the source of truth. Compaction writes a smaller
+`compact_text` beside the raw message in SQLite:
 
-The current design is observability first, mechanism later. RagMemory now logs
-`structured_object_added` events with object ID, type, tags, message ID, role,
-importance, and background extraction job ID. That gives future compaction a
-real audit trail.
+```text
+messages.text          raw audit log
+messages.compact_text  compact retrieval/export text
+messages.compact_status ok | failed | skipped_short | too_long
+```
 
-Build `scripts/compact.py --dry-run` only when one of these concrete triggers
-appears:
+Retrieval and Obsidian prefer `compact_text` only when
+`compact_status = ok`; otherwise they fall back to raw text.
 
-- `topics/` grows above roughly 30 hubs despite topic filtering.
-- `inspect_events.py --event structured_object_added` shows repeated structured
-  objects on the same `message_id`.
-- Several tag spellings normalize to the same concept.
-- Retrieval returns multiple results that are obviously the same memory.
-- Background extraction produces overlapping objects for the same `message_id`
-  from different `job_id` values.
+Run the worker for new messages:
 
-First compaction should be dry-run only. It should report candidates, not
-rewrite memory. Safe Tier 1 checks:
+```powershell
+uv run python scripts/run_worker.py
+```
 
-- tag variant detection
-- likely duplicate structured objects
-- exact duplicate structured objects from repeated extraction jobs
+Backfill old messages manually:
 
-No LLM "sleep mode" should rewrite memory automatically. If LLM assistance is
-added later, use it only as a bounded judge for specific duplicate or
-supersession decisions.
+```powershell
+uv run python scripts/compact_backfill.py --limit 20
+```
+
+If NVIDIA returns `429 Too Many Requests`, wait a minute and retry with a
+smaller limit. Stop the worker during large backfills to reduce overlap.
+
+After changing compaction behavior, rebuild the retrieval index:
+
+```powershell
+uv run python scripts/rebuild_memory_index.py
+```
 
 ## Technical Details
 

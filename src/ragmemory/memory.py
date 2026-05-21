@@ -43,6 +43,20 @@ def _load_settings_file(path: Path) -> None:
             os.environ.setdefault("NVIDIA_API_KEY", section["api_key"].strip())
         if section.get("model"):
             os.environ.setdefault("STRUCTURED_MEMORY_MODEL", section["model"].strip())
+    if parser.has_section("compact"):
+        section = parser["compact"]
+        if section.get("enable"):
+            os.environ.setdefault("RAGMEMORY_COMPACT_ENABLE", section["enable"].strip())
+        if section.get("model"):
+            os.environ.setdefault("RAGMEMORY_COMPACT_MODEL", section["model"].strip())
+        if section.get("min_chars"):
+            os.environ.setdefault("RAGMEMORY_COMPACT_MIN_CHARS", section["min_chars"].strip())
+        if section.get("max_chars"):
+            os.environ.setdefault("RAGMEMORY_COMPACT_MAX_CHARS", section["max_chars"].strip())
+        if section.get("target_ratio"):
+            os.environ.setdefault("RAGMEMORY_COMPACT_TARGET_RATIO", section["target_ratio"].strip())
+        if section.get("mode"):
+            os.environ.setdefault("RAGMEMORY_COMPACT_MODE", section["mode"].strip())
 
 
 def _load_local_config() -> None:
@@ -67,6 +81,44 @@ def _load_local_config() -> None:
 
 
 _load_local_config()
+
+
+def evidence_content_hash(text: str, ev_type: str) -> str:
+    # Schema v1: normalize line endings and trim outer whitespace.
+    # Do not lowercase block/code evidence; exact casing is part of the evidence.
+    # Keep this stable, because compact_text evidence refs depend on it.
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if ev_type in {"path", "url"}:
+        normalized = normalized.lower()
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:EVIDENCE_REF_HASH_CHARS]
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value.strip())
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return float(value.strip())
+    except ValueError:
+        return default
+
 
 CHUNK_MAX_TOKENS = 300
 CHUNK_MIN_TOKENS = 80
@@ -97,6 +149,21 @@ STRUCTURED_TYPES = {
     "code_reference", "chart", "open_question",
 }
 EXACT_ARTIFACT_TYPES = {"config", "table", "chart"}
+DEFAULT_COMPACT_MODEL = STRUCTURED_MEMORY_MODEL
+DEFAULT_COMPACT_MIN_CHARS = 1500
+DEFAULT_COMPACT_MAX_CHARS = 30000
+DEFAULT_COMPACT_TARGET_RATIO = 0.35
+DEFAULT_COMPACT_MODE = "background"
+COMPACT_STATUS_OK = "ok"
+COMPACT_STATUS_FAILED = "failed"
+COMPACT_STATUS_SKIPPED_SHORT = "skipped_short"
+COMPACT_STATUS_TOO_LONG = "too_long"
+JOB_TYPE_STRUCTURED_EXTRACT = "structured_extract"
+JOB_TYPE_COMPACT = "compact"
+JOB_STATUS_PENDING = "pending"
+JOB_STATUS_RUNNING = "running"
+JOB_STATUS_DONE = "done"
+JOB_STATUS_FAILED = "failed"
 
 HEADER_RE = re.compile(r"^#{1,3}\s+(.+)$", re.MULTILINE)
 FENCED_BLOCK_RE = re.compile(
@@ -104,6 +171,30 @@ FENCED_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
+PATH_TOKEN_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|/)[^\s`\"'()\[\]]{1,180}\.[A-Za-z0-9_]{1,16}"
+)
+BACKTICK_TOKEN_RE = re.compile(r"`([^`\n]{1,180})`")
+URL_RE = re.compile(r"https?://[^\s`\"')]+")
+MARKDOWN_HEADING_RE = re.compile(r"^\s*#{1,6}\s+.+$", re.MULTILINE)
+ERROR_LINE_RE = re.compile(
+    r"^\s*(?:Traceback .+|File \"[^\"]+\", line \d+.*|[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception): .+|ERROR[: ].+|Failed to .+|Permission denied.*|.+ not found)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+COMMAND_LINE_RE = re.compile(
+    r"^\s*(?:\$?\s*)?(?:pwsh|powershell|uv|python|py|git|cmd|npm|node)\b.{0,240}$",
+    re.IGNORECASE | re.MULTILINE,
+)
+EVIDENCE_REF_RE = re.compile(r"\bevidence\[([a-z]+):([a-f0-9]{12})\]")
+EVIDENCE_REF_ANY_RE = re.compile(r"\bevidence\[[^\]]+\]")
+EVIDENCE_WORD_CHARS = "A-Za-z0-9_"
+EVIDENCE_REF_HASH_CHARS = 12
+EVIDENCE_REF_BLOCK_MIN_CHARS = 60
+INFORMATIVE_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
+    "how", "i", "in", "is", "it", "of", "on", "or", "so", "the", "this",
+    "to", "we", "what", "when", "why", "with", "you",
+}
 MISSING_CTX_PHRASES = [
     "as we said", "earlier", "we decided", "you mentioned", "what did we",
     "continue", "the thing we", "remind me", "what was",
@@ -137,6 +228,7 @@ class RetrievedChunk:
     score: float = 0.0
     decay_strength: float = 1.0
     rrf_score: float = 0.0
+    source: str = "raw_chunk"
 
 
 @dataclass
@@ -192,6 +284,7 @@ class StructuredMemoryObject:
     importance: float
     message_id: int
     role: str
+    content_hash: str | None = None
 
 
 @dataclass
@@ -206,11 +299,58 @@ class AddMessageResult:
 
 
 @dataclass
-class StructuredExtractionJob:
+class MessageCompactionOptions:
+    enabled: bool = False
+    model: str = DEFAULT_COMPACT_MODEL
+    min_chars: int = DEFAULT_COMPACT_MIN_CHARS
+    max_chars: int = DEFAULT_COMPACT_MAX_CHARS
+    target_ratio: float = DEFAULT_COMPACT_TARGET_RATIO
+    mode: str = DEFAULT_COMPACT_MODE
+
+    @classmethod
+    def from_env(cls) -> "MessageCompactionOptions":
+        mode = os.environ.get("RAGMEMORY_COMPACT_MODE", DEFAULT_COMPACT_MODE).strip().lower()
+        if mode not in {"background", "inline"}:
+            mode = DEFAULT_COMPACT_MODE
+        return cls(
+            enabled=_env_bool("RAGMEMORY_COMPACT_ENABLE", False),
+            model=os.environ.get("RAGMEMORY_COMPACT_MODEL", DEFAULT_COMPACT_MODEL).strip(),
+            min_chars=max(0, _env_int("RAGMEMORY_COMPACT_MIN_CHARS", DEFAULT_COMPACT_MIN_CHARS)),
+            max_chars=max(0, _env_int("RAGMEMORY_COMPACT_MAX_CHARS", DEFAULT_COMPACT_MAX_CHARS)),
+            target_ratio=max(
+                0.05,
+                min(_env_float("RAGMEMORY_COMPACT_TARGET_RATIO", DEFAULT_COMPACT_TARGET_RATIO), 1.0),
+            ),
+            mode=mode,
+        )
+
+
+@dataclass
+class MessageCompactionJob:
     job_id: str
     role: str
     text: str
     message_id: int
+
+
+@dataclass
+class EvidenceReference:
+    ref_type: str
+    content_hash: str
+    source_text: str
+    preview: str
+
+    @property
+    def marker(self) -> str:
+        return f"evidence[{self.ref_type}:{self.content_hash}]"
+
+
+@dataclass
+class BackgroundJob:
+    job_id: str
+    job_type: str
+    message_id: int
+    attempts: int
 
 
 @dataclass
@@ -261,14 +401,68 @@ def format_for_prompt(bundle: ContextBundle) -> str:
         parts.append("=== Structured Memory ===\n" + "\n---\n".join(
             _format_structured_object(obj) for obj in bundle.structured
         ))
+    seen_texts: set[str] = set()
     if bundle.kept:
+        relevant_texts = []
+        for chunk in bundle.kept:
+            text = _clean_prompt_memory_text(chunk.text)
+            if not _should_include_prompt_memory_text(text):
+                continue
+            key = _dedupe_prompt_memory_key(text)
+            if key in seen_texts:
+                continue
+            seen_texts.add(key)
+            relevant_texts.append(text)
+    else:
+        relevant_texts = []
+    if relevant_texts:
         parts.append("=== Relevant Memory ===\n" + "\n---\n".join(
-            chunk.text for chunk in bundle.kept
+            relevant_texts
         ))
     if bundle.recent:
-        lines = "\n".join(f"{message.role.upper()}: {message.text}" for message in bundle.recent)
-        parts.append("=== Recent Conversation ===\n" + lines)
+        recent_lines = []
+        for message in bundle.recent:
+            text = _clean_prompt_memory_text(message.text)
+            if not _should_include_prompt_memory_text(text):
+                continue
+            key = _dedupe_prompt_memory_key(text)
+            if key in seen_texts:
+                continue
+            seen_texts.add(key)
+            recent_lines.append(f"{message.role.upper()}: {text}")
+        if recent_lines:
+            parts.append("=== Recent Conversation ===\n" + "\n".join(recent_lines))
     return "\n\n".join(parts)
+
+
+def _clean_prompt_memory_text(text: str) -> str:
+    cleaned = text.replace("\r\n", "\n").strip()
+    cleaned = re.sub(
+        r"(?is)# Context from my IDE setup:\s*.*?## My request for Codex:\s*",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(r"(?im)^## Active file:.*(?:\n|$)", "", cleaned)
+    cleaned = re.sub(r"(?ims)^## Open tabs:\s*(?:\n- .*)+", "", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _should_include_prompt_memory_text(text: str) -> bool:
+    normalized = _dedupe_prompt_memory_key(text)
+    if not normalized:
+        return False
+    low_value = {
+        "btw",
+        "ok",
+        "wait let me ask claude",
+        "let me ask claude",
+    }
+    return normalized not in low_value
+
+
+def _dedupe_prompt_memory_key(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
 
 
 def _format_structured_object(obj: StructuredMemoryObject) -> str:
@@ -300,6 +494,12 @@ class BM25Index:
         self._ids.append(doc_id)
         self._tokenized.append(text.lower().split())
         self._dirty = True
+
+    def clear(self):
+        self._ids = []
+        self._tokenized = []
+        self._bm25 = None
+        self._dirty = False
 
     def search(self, query: str, top_k: int) -> list[str]:
         if not self._ids or top_k <= 0:
@@ -395,6 +595,7 @@ class ExactArtifactExtractor:
                 importance=0.85,
                 message_id=message_id,
                 role=role,
+                content_hash=evidence_content_hash(source_text, lang or obj_type),
             ))
         return objects
 
@@ -422,6 +623,7 @@ class ExactArtifactExtractor:
                 importance=0.85,
                 message_id=message_id,
                 role=role,
+                content_hash=evidence_content_hash(source_text, "table"),
             ))
         return objects
 
@@ -442,23 +644,30 @@ class ExactArtifactExtractor:
 
 class StructuredMemoryExtractor:
     def __init__(self):
-        api_key = os.environ.get(NVIDIA_API_KEY_ENV)
         self.client = None
-        if api_key:
-            from openai import OpenAI
 
-            self.client = OpenAI(
-                base_url="https://integrate.api.nvidia.com/v1",
-                api_key=api_key,
-            )
+    def _client(self):
+        if self.client:
+            return self.client
+        api_key = os.environ.get(NVIDIA_API_KEY_ENV)
+        if not api_key:
+            return None
+        from openai import OpenAI
+
+        self.client = OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=api_key,
+        )
+        return self.client
 
     def extract(self, role: str, text: str, message_id: int) -> list[StructuredMemoryObject]:
-        if not self.client or not text.strip():
+        client = self._client()
+        if not client or not text.strip():
             return []
 
         prompt = self._build_prompt(role, text)
         try:
-            response = self.client.chat.completions.create(
+            response = client.chat.completions.create(
                 model=STRUCTURED_MEMORY_MODEL,
                 messages=[
                     {"role": "system", "content": "Extract only durable memory objects. Return strict JSON only."},
@@ -553,6 +762,7 @@ Message:
         except (TypeError, ValueError):
             importance = 0.7
         importance = round(max(0.0, min(importance, 1.0)), 3)
+        content_hash = str(item.get("content_hash", "")).strip() or None
         return StructuredMemoryObject(
             id=f"sm_{uuid.uuid4()}",
             type=obj_type,
@@ -562,7 +772,121 @@ Message:
             importance=importance,
             message_id=message_id,
             role=role,
+            content_hash=content_hash,
         )
+
+
+class MessageCompactor:
+    def __init__(self, model: str):
+        self.model = model
+        self.last_error: str | None = None
+        self.client = None
+
+    def _client(self):
+        if self.client:
+            return self.client
+        api_key = os.environ.get(NVIDIA_API_KEY_ENV)
+        if not api_key:
+            return None
+        from openai import OpenAI
+
+        self.client = OpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=api_key,
+        )
+        return self.client
+
+    def compact(
+        self,
+        role: str,
+        text: str,
+        target_ratio: float,
+        evidence_refs: list[EvidenceReference] | None = None,
+    ) -> str | None:
+        self.last_error = None
+        client = self._client()
+        if not client:
+            self.last_error = "NVIDIA API key missing"
+            return None
+        if not text.strip():
+            self.last_error = "empty message"
+            return None
+
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Compact noisy chat memory while preserving exact technical evidence.",
+                    },
+                    {
+                        "role": "user",
+                        "content": self._build_prompt(
+                            role,
+                            text,
+                            target_ratio,
+                            evidence_refs or [],
+                        ),
+                    },
+                ],
+                temperature=0,
+                max_tokens=1200,
+            )
+        except Exception as exc:
+            self.last_error = str(exc)
+            print(f"  [compact skipped] NVIDIA compaction failed: {exc}")
+            return None
+
+        compact_text = (response.choices[0].message.content or "").strip()
+        if not compact_text:
+            self.last_error = "empty compact text"
+            return None
+        return compact_text
+
+    def _build_prompt(
+        self,
+        role: str,
+        text: str,
+        target_ratio: float,
+        evidence_refs: list[EvidenceReference],
+    ) -> str:
+        ratio_percent = int(target_ratio * 100)
+        manifest = "\n".join(
+            f"- {ref.marker}: {ref.preview}"
+            for ref in evidence_refs
+        ) or "- none"
+        return f"""Role: {role}
+
+Compact this chat message for long-term memory storage.
+Target about {ratio_percent}% of the original length, but preserve important details over hitting the ratio.
+
+Preserve verbatim:
+- File paths, identifiers, URLs, config keys, and backticked tokens.
+- Full error messages, exception names, tracebacks, and command output that explains a failure.
+- Shell commands and flags.
+- User preferences, decisions, constraints, and requested workflow rules.
+- Numbers, dates, versions, ports, IDs, and model names.
+
+Evidence references:
+- For long fenced code/config/table blocks, you may use only the references listed below instead of repeating the full block.
+- Do not invent references.
+- Do not use references for inline file paths, URLs, errors, or commands; write those verbatim.
+
+Available references:
+{manifest}
+
+Drop:
+- Repeated IDE context blocks.
+- Tool call boilerplate and "I am reading/checking" filler.
+- Duplicated stack traces or logs after the first useful lines.
+- Conversation filler that does not change future behavior.
+
+Return compact text only. Do not wrap it in JSON or Markdown fences.
+
+Message:
+{text[:12000]}
+"""
 
 
 class StructuredMemoryStore:
@@ -708,13 +1032,14 @@ class MemoryStore:
             self.db_path / "structured_memory.jsonl",
             self.structured_collection,
         )
+        self.compaction_options = MessageCompactionOptions.from_env()
+        self.compactor = MessageCompactor(self.compaction_options.model)
         self.artifact_extractor = ExactArtifactExtractor()
         self.structured_extractor = StructuredMemoryExtractor()
         self.bm25 = BM25Index()
         self.raw_log: list[dict] = []
         self._message_hashes: dict[tuple[str, str], int] = {}
         self._tombstoned_message_ids: set[int] = set()
-        self._pending_extractions: list[StructuredExtractionJob] = []
         self._recall_options = RecallOptions()
         self.message_id = 0
 
@@ -789,8 +1114,7 @@ class MemoryStore:
 
         # rebuild BM25 from chromadb (always, since BM25 is in-memory)
         if self.collection.count() > 0:
-            all_docs = self.collection.get(include=["documents"])
-            self.bm25.build(all_docs["ids"], all_docs["documents"])
+            self._rebuild_bm25_from_chroma()
             print(f"  [bm25] rebuilt index with {len(self.bm25)} chunks")
 
     def _save_state(self):
@@ -866,6 +1190,8 @@ class MemoryStore:
             self._create_messages_table(conn)
             self._create_memory_metadata_table(conn)
             self._migrate_message_uniqueness(conn)
+            self._create_jobs_table(conn)
+            self._ensure_message_compaction_columns(conn)
             conn.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS messages_active_hash
@@ -892,10 +1218,26 @@ class MemoryStore:
                 text TEXT NOT NULL,
                 content_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                compact_text TEXT,
+                compacted_at TEXT,
+                compact_model TEXT,
+                compact_status TEXT,
                 tombstoned INTEGER NOT NULL DEFAULT 0
             )
             """
         )
+
+    def _ensure_message_compaction_columns(self, conn):
+        rows = conn.execute("PRAGMA table_info(messages)").fetchall()
+        columns = {row[1] for row in rows}
+        for name, column_type in (
+            ("compact_text", "TEXT"),
+            ("compacted_at", "TEXT"),
+            ("compact_model", "TEXT"),
+            ("compact_status", "TEXT"),
+        ):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {column_type}")
 
     def _create_memory_metadata_table(self, conn):
         conn.execute(
@@ -913,6 +1255,38 @@ class MemoryStore:
                 tombstoned_at TEXT,
                 FOREIGN KEY(message_id) REFERENCES messages(message_id)
             )
+            """
+        )
+
+    def _create_jobs_table(self, conn):
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                job_id TEXT PRIMARY KEY,
+                job_type TEXT NOT NULL,
+                message_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                FOREIGN KEY(message_id) REFERENCES messages(message_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_dedup
+            ON jobs(job_type, message_id)
+            WHERE status IN ('pending', 'running')
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS jobs_pending
+            ON jobs(status, created_at)
+            WHERE status = 'pending'
             """
         )
 
@@ -1035,6 +1409,296 @@ class MemoryStore:
             ),
         )
 
+    def enqueue_job(self, job_type: str, message_id: int) -> str | None:
+        if job_type not in {JOB_TYPE_STRUCTURED_EXTRACT, JOB_TYPE_COMPACT}:
+            raise ValueError(f"unknown job_type: {job_type}")
+        job_id = f"job_{uuid.uuid4()}"
+        with sqlite3.connect(self.state_db) as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO jobs(
+                    job_id, job_type, message_id, status, attempts, created_at
+                ) VALUES (?, ?, ?, ?, 0, ?)
+                """,
+                (job_id, job_type, message_id, JOB_STATUS_PENDING, self._now_iso()),
+            )
+        if cursor.rowcount == 0:
+            return None
+        self._log_event(
+            "background_job_queued",
+            job_id=job_id,
+            job_type=job_type,
+            message_id=message_id,
+        )
+        return job_id
+
+    def claim_next_job(self, job_type: str | None = None) -> BackgroundJob | None:
+        params: list[object] = [JOB_STATUS_PENDING]
+        type_filter = ""
+        if job_type is not None:
+            type_filter = " AND job_type = ?"
+            params.append(job_type)
+        with sqlite3.connect(self.state_db) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                f"""
+                SELECT job_id, job_type, message_id, attempts
+                FROM jobs
+                WHERE status = ?
+                {type_filter}
+                ORDER BY created_at
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+            if row is None:
+                return None
+            job_id, claimed_type, message_id, attempts = row
+            next_attempts = attempts + 1
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?,
+                    attempts = ?,
+                    started_at = ?,
+                    finished_at = NULL,
+                    last_error = NULL
+                WHERE job_id = ?
+                """,
+                (JOB_STATUS_RUNNING, next_attempts, self._now_iso(), job_id),
+            )
+        return BackgroundJob(
+            job_id=job_id,
+            job_type=claimed_type,
+            message_id=message_id,
+            attempts=next_attempts,
+        )
+
+    def complete_job(self, job_id: str, status: str, last_error: str | None = None) -> None:
+        if status not in {JOB_STATUS_DONE, JOB_STATUS_FAILED}:
+            raise ValueError(f"invalid terminal job status: {status}")
+        with sqlite3.connect(self.state_db) as conn:
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?,
+                    last_error = ?,
+                    finished_at = ?
+                WHERE job_id = ?
+                """,
+                (status, last_error, self._now_iso(), job_id),
+            )
+
+    def reset_running_jobs(self) -> int:
+        with sqlite3.connect(self.state_db) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?,
+                    started_at = NULL
+                WHERE status = ?
+                """,
+                (JOB_STATUS_PENDING, JOB_STATUS_RUNNING),
+            )
+        if cursor.rowcount:
+            self._log_event("background_jobs_reset", count=cursor.rowcount)
+        return cursor.rowcount
+
+    def job_counts(self) -> dict[str, int]:
+        with sqlite3.connect(self.state_db) as conn:
+            rows = conn.execute(
+                """
+                SELECT status, COUNT(*)
+                FROM jobs
+                GROUP BY status
+                """
+            ).fetchall()
+        return {status: count for status, count in rows}
+
+    def _message_for_job(self, message_id: int) -> tuple[str, str] | None:
+        with sqlite3.connect(self.state_db) as conn:
+            row = conn.execute(
+                """
+                SELECT role, text
+                FROM messages
+                WHERE message_id = ?
+                  AND tombstoned = 0
+                """,
+                (message_id,),
+            ).fetchone()
+        return row if row is not None else None
+
+    def process_background_job(self, job: BackgroundJob) -> list[str] | list[int]:
+        row = self._message_for_job(job.message_id)
+        if row is None:
+            self._log_event(
+                "background_job_skipped",
+                job_id=job.job_id,
+                job_type=job.job_type,
+                message_id=job.message_id,
+                reason="message_missing_or_tombstoned",
+            )
+            return []
+        role, text = row
+        if job.job_type == JOB_TYPE_STRUCTURED_EXTRACT:
+            structured = self._extract_structured_objects(role, text, job.message_id)
+            self.structured.add_many(structured)
+            self._log_structured_objects_added(
+                structured,
+                reason="structured_extraction_completed",
+                job_id=job.job_id,
+            )
+            object_ids = [obj.id for obj in structured]
+            self._log_event(
+                "structured_extraction_completed",
+                job_id=job.job_id,
+                message_id=job.message_id,
+                structured_object_ids=object_ids,
+            )
+            if structured:
+                print(f"  [structured {len(structured)} object(s) | total: {len(self.structured)}]")
+            return object_ids
+        if job.job_type == JOB_TYPE_COMPACT:
+            compacted_id = self._run_compaction_job(
+                MessageCompactionJob(
+                    job_id=job.job_id,
+                    role=role,
+                    text=text,
+                    message_id=job.message_id,
+                )
+            )
+            return [compacted_id] if compacted_id is not None else []
+        raise ValueError(f"unknown job_type: {job.job_type}")
+
+    def _message_index_text(self, text: str, compact_text: str | None, compact_status: str | None) -> tuple[str, str]:
+        if compact_status == COMPACT_STATUS_OK and compact_text and compact_text.strip():
+            return compact_text, "compact_chunk"
+        return text, "raw_chunk"
+
+    def _fetch_message_for_index(self, message_id: int) -> tuple[int, str, str, str | None, str | None] | None:
+        with sqlite3.connect(self.state_db) as conn:
+            return conn.execute(
+                """
+                SELECT message_id, role, text, compact_text, compact_status
+                FROM messages
+                WHERE message_id = ?
+                  AND tombstoned = 0
+                """,
+                (message_id,),
+            ).fetchone()
+
+    def _add_chunks_to_index(self, chunks: list[Chunk], source: str) -> None:
+        if not chunks:
+            return
+        self.collection.add(
+            ids=[c.id for c in chunks],
+            documents=[c.text for c in chunks],
+            metadatas=[
+                {
+                    "message_id": c.message_id,
+                    "role": c.role,
+                    "importance": c.importance,
+                    "source": source,
+                }
+                for c in chunks
+            ],
+        )
+        for c in chunks:
+            self.bm25.add(c.id, c.text)
+
+    def _chunk_message_for_index(
+        self,
+        message_id: int,
+        role: str,
+        text: str,
+        compact_text: str | None,
+        compact_status: str | None,
+    ) -> tuple[list[Chunk], str]:
+        index_text, source = self._message_index_text(text, compact_text, compact_status)
+        return self.chunker.split(index_text, message_id, role), source
+
+    def _delete_index_chunks_for_message(self, message_id: int) -> int:
+        if self.collection.count() == 0:
+            return 0
+        data = self.collection.get(include=["metadatas"])
+        ids = [
+            chunk_id for chunk_id, metadata in zip(data["ids"], data["metadatas"])
+            if (metadata or {}).get("message_id", (metadata or {}).get("turn_id", 0)) == message_id
+        ]
+        if ids:
+            self.collection.delete(ids=ids)
+        return len(ids)
+
+    def _rebuild_bm25_from_chroma(self) -> None:
+        if self.collection.count() == 0:
+            self.bm25.clear()
+            return
+        all_docs = self.collection.get(include=["documents"])
+        self.bm25.build(all_docs["ids"], all_docs["documents"])
+
+    def reindex_message(self, message_id: int) -> int:
+        row = self._fetch_message_for_index(message_id)
+        removed = self._delete_index_chunks_for_message(message_id)
+        if row is None:
+            self._rebuild_bm25_from_chroma()
+            return 0
+        _, role, text, compact_text, compact_status = row
+        chunks, source = self._chunk_message_for_index(
+            message_id,
+            role,
+            text,
+            compact_text,
+            compact_status,
+        )
+        self._add_chunks_to_index(chunks, source)
+        self._rebuild_bm25_from_chroma()
+        self._log_event(
+            "message_reindexed",
+            message_id=message_id,
+            source=source,
+            removed_chunks=removed,
+            chunk_ids=[chunk.id for chunk in chunks],
+        )
+        return len(chunks)
+
+    def rebuild_chat_memory_index(self) -> int:
+        if self.collection.count() > 0:
+            data = self.collection.get(include=["metadatas"])
+            if data["ids"]:
+                self.collection.delete(ids=data["ids"])
+        self.bm25.clear()
+        with sqlite3.connect(self.state_db) as conn:
+            rows = conn.execute(
+                """
+                SELECT message_id, role, text, compact_text, compact_status
+                FROM messages
+                WHERE tombstoned = 0
+                ORDER BY message_id
+                """
+            ).fetchall()
+
+        chunk_count = 0
+        compact_message_ids = []
+        for message_id, role, text, compact_text, compact_status in rows:
+            chunks, source = self._chunk_message_for_index(
+                message_id,
+                role,
+                text,
+                compact_text,
+                compact_status,
+            )
+            self._add_chunks_to_index(chunks, source)
+            chunk_count += len(chunks)
+            if source == "compact_chunk":
+                compact_message_ids.append(message_id)
+        self._rebuild_bm25_from_chroma()
+        self._log_event(
+            "chat_memory_index_rebuilt",
+            chunk_count=chunk_count,
+            compact_message_ids=compact_message_ids,
+        )
+        return chunk_count
+
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
@@ -1056,6 +1720,346 @@ class MemoryStore:
 
     def _is_message_tombstoned(self, message_id: int) -> bool:
         return message_id in self._tombstoned_message_ids
+
+    def _maybe_compact_message(self, role: str, text: str, message_id: int) -> str | None:
+        if not self.compaction_options.enabled:
+            return None
+        if len(text) < self.compaction_options.min_chars:
+            self._set_message_compaction(
+                message_id,
+                status=COMPACT_STATUS_SKIPPED_SHORT,
+                compact_text=None,
+                compacted_at=None,
+                compact_model=self.compaction_options.model,
+            )
+            self._log_event(
+                "message_compaction_skipped",
+                message_id=message_id,
+                reason="short_message",
+                min_chars=self.compaction_options.min_chars,
+            )
+            return None
+
+        job = MessageCompactionJob(
+            job_id=f"compact_{uuid.uuid4()}",
+            role=role,
+            text=text,
+            message_id=message_id,
+        )
+        if self.compaction_options.mode == "inline":
+            self._run_compaction_job(job)
+            return job.job_id
+        job_id = self.enqueue_job(JOB_TYPE_COMPACT, message_id)
+        if job_id:
+            self._log_event(
+                "message_compaction_queued",
+                job_id=job_id,
+                message_id=message_id,
+            )
+        else:
+            self._log_event(
+                "message_compaction_queue_deduped",
+                message_id=message_id,
+            )
+        return job_id
+
+    def _set_message_compaction(
+        self,
+        message_id: int,
+        *,
+        status: str,
+        compact_text: str | None,
+        compacted_at: str | None,
+        compact_model: str | None,
+    ) -> None:
+        with sqlite3.connect(self.state_db) as conn:
+            conn.execute(
+                """
+                UPDATE messages
+                SET compact_text = ?,
+                    compacted_at = ?,
+                    compact_model = ?,
+                    compact_status = ?
+                WHERE message_id = ?
+                """,
+                (compact_text, compacted_at, compact_model, status, message_id),
+            )
+
+    def _normalize_evidence_token(self, token: str) -> str:
+        normalized = " ".join(token.strip().strip("`").lower().split())
+        normalized = normalized.lstrip("/\\")
+        return normalized.rstrip(".,;:)]}\"'")
+
+    def _evidence_ref_type(self, value: str) -> str:
+        ref_type = re.sub(r"[^a-z]", "", value.strip().lower())
+        return ref_type or "block"
+
+    def _evidence_preview(self, source_text: str) -> str:
+        lines = [line.strip() for line in source_text.splitlines() if line.strip()]
+        first = lines[0] if lines else source_text.strip()
+        if first.startswith("```") and len(lines) > 1:
+            first = lines[1]
+        if len(first) > 90:
+            first = first[:87] + "..."
+        return f"{len(lines)} line block, opens with: {first}"
+
+    def _block_evidence_references(self, text: str) -> list[EvidenceReference]:
+        refs: list[EvidenceReference] = []
+        seen: set[tuple[str, str]] = set()
+        for match in FENCED_BLOCK_RE.findall(text):
+            lang, body = match
+            source = f"```{lang}\n{body.strip()}\n```" if lang else f"```\n{body.strip()}\n```"
+            if len(source) < EVIDENCE_REF_BLOCK_MIN_CHARS and "\n" not in body.strip():
+                continue
+            ref_type = self._evidence_ref_type(lang or "code")
+            content_hash = evidence_content_hash(source, ref_type)
+            key = (ref_type, content_hash)
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append(EvidenceReference(
+                ref_type=ref_type,
+                content_hash=content_hash,
+                source_text=source,
+                preview=self._evidence_preview(source),
+            ))
+
+        lines = text.splitlines()
+        i = 0
+        while i < len(lines) - 1:
+            if "|" not in lines[i] or not TABLE_SEPARATOR_RE.match(lines[i + 1]):
+                i += 1
+                continue
+            start = i
+            i += 2
+            while i < len(lines) and "|" in lines[i].strip():
+                i += 1
+            source = "\n".join(lines[start:i])
+            if len(source) < EVIDENCE_REF_BLOCK_MIN_CHARS and "\n" not in source.strip():
+                continue
+            ref_type = "table"
+            content_hash = evidence_content_hash(source, ref_type)
+            key = (ref_type, content_hash)
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append(EvidenceReference(
+                ref_type=ref_type,
+                content_hash=content_hash,
+                source_text=source,
+                preview=self._evidence_preview(source),
+            ))
+        return refs
+
+    def _evidence_refs_in_text(self, text: str) -> set[str]:
+        return set(EVIDENCE_REF_ANY_RE.findall(text))
+
+    def _contains_evidence_token(self, compact_text: str, token: str) -> bool:
+        normalized_token = self._normalize_evidence_token(token)
+        if not normalized_token:
+            return True
+        normalized_text = " ".join(compact_text.lower().split())
+        pattern = (
+            rf"(?<![{EVIDENCE_WORD_CHARS}])"
+            rf"{re.escape(normalized_token)}"
+            rf"(?![{EVIDENCE_WORD_CHARS}])"
+        )
+        return re.search(pattern, normalized_text) is not None
+
+    def _compaction_evidence_tokens(self, text: str) -> tuple[list[str], list[str]]:
+        critical: set[str] = set()
+        informative: set[str] = set()
+        for match in PATH_TOKEN_RE.findall(text):
+            token = match.strip().rstrip(".,;:")
+            if "/" in token or "\\" in token:
+                critical.add(token)
+        for match in URL_RE.findall(text):
+            critical.add(match.strip().rstrip(".,;:"))
+        for match in MARKDOWN_HEADING_RE.findall(text):
+            heading = match.strip()
+            if len(heading) <= 160:
+                informative.add(heading)
+        for match in FENCED_BLOCK_RE.findall(text):
+            lang, body = match
+            source = f"```{lang}\n{body.strip()}\n```" if lang else f"```\n{body.strip()}\n```"
+            if len(source) <= 1200:
+                if lang.strip().lower() in {"", "text", "txt", "plain"}:
+                    informative.add(source)
+                else:
+                    critical.add(source)
+        for match in BACKTICK_TOKEN_RE.findall(text):
+            token = match.strip()
+            normalized = self._normalize_evidence_token(token)
+            if (
+                len(normalized) >= 6
+                and normalized not in INFORMATIVE_STOPWORDS
+                and not MARKDOWN_HEADING_RE.match(token)
+                and len(token) <= 120
+            ):
+                informative.add(token)
+        for regex in (ERROR_LINE_RE, COMMAND_LINE_RE):
+            for match in regex.findall(text):
+                line = match.strip()
+                if line and len(line) <= 240:
+                    critical.add(line)
+        return sorted(critical), sorted(informative)
+
+    def _is_evidence_token_satisfied(
+        self,
+        compact_text: str,
+        token: str,
+        ref_by_source: dict[str, EvidenceReference],
+        used_refs: set[str],
+    ) -> bool:
+        if self._contains_evidence_token(compact_text, token):
+            return True
+        ref = ref_by_source.get(token)
+        return bool(ref and ref.marker in used_refs)
+
+    def _missing_compaction_tokens(self, raw_text: str, compact_text: str) -> tuple[list[str], list[str]]:
+        critical, informative = self._compaction_evidence_tokens(raw_text)
+        evidence_refs = self._block_evidence_references(raw_text)
+        valid_refs = {ref.marker for ref in evidence_refs}
+        used_refs = self._evidence_refs_in_text(compact_text)
+        ref_by_source = {ref.source_text: ref for ref in evidence_refs}
+        invalid_refs = sorted(
+            ref for ref in used_refs - valid_refs
+            if ref not in raw_text
+        )
+        missing_critical = [
+            token for token in critical
+            if not self._is_evidence_token_satisfied(
+                compact_text,
+                token,
+                ref_by_source,
+                used_refs,
+            )
+        ]
+        missing_critical.extend(f"invalid evidence ref: {ref}" for ref in invalid_refs)
+        missing_informative = [
+            token for token in informative
+            if not self._is_evidence_token_satisfied(
+                compact_text,
+                token,
+                ref_by_source,
+                used_refs,
+            )
+        ]
+        return missing_critical, missing_informative
+
+    def _run_compaction_job(self, job: MessageCompactionJob) -> int | None:
+        if self._is_message_tombstoned(job.message_id):
+            self._log_event(
+                "message_compaction_skipped",
+                job_id=job.job_id,
+                message_id=job.message_id,
+                reason="message_tombstoned",
+            )
+            return None
+        if len(job.text) < self.compaction_options.min_chars:
+            self._set_message_compaction(
+                job.message_id,
+                status=COMPACT_STATUS_SKIPPED_SHORT,
+                compact_text=None,
+                compacted_at=None,
+                compact_model=self.compaction_options.model,
+            )
+            self._log_event(
+                "message_compaction_skipped",
+                job_id=job.job_id,
+                message_id=job.message_id,
+                reason="short_message",
+                min_chars=self.compaction_options.min_chars,
+            )
+            return None
+        if self.compaction_options.max_chars and len(job.text) > self.compaction_options.max_chars:
+            self._set_message_compaction(
+                job.message_id,
+                status=COMPACT_STATUS_TOO_LONG,
+                compact_text=None,
+                compacted_at=None,
+                compact_model=self.compaction_options.model,
+            )
+            self._log_event(
+                "message_compaction_skipped",
+                job_id=job.job_id,
+                message_id=job.message_id,
+                reason="too_long",
+                max_chars=self.compaction_options.max_chars,
+                raw_chars=len(job.text),
+            )
+            return None
+
+        compact_text = self.compactor.compact(
+            job.role,
+            job.text,
+            self.compaction_options.target_ratio,
+            self._block_evidence_references(job.text),
+        )
+        if compact_text is None:
+            error = self.compactor.last_error or "unknown compaction failure"
+            self._set_message_compaction(
+                job.message_id,
+                status=COMPACT_STATUS_FAILED,
+                compact_text=None,
+                compacted_at=None,
+                compact_model=self.compaction_options.model,
+            )
+            self._log_event(
+                "message_compaction_failed",
+                job_id=job.job_id,
+                message_id=job.message_id,
+                error=error,
+            )
+            return None
+
+        missing_critical, missing_informative = self._missing_compaction_tokens(job.text, compact_text)
+        if missing_critical:
+            self._set_message_compaction(
+                job.message_id,
+                status=COMPACT_STATUS_FAILED,
+                compact_text=None,
+                compacted_at=None,
+                compact_model=self.compaction_options.model,
+            )
+            self._log_event(
+                "message_compaction_failed",
+                job_id=job.job_id,
+                message_id=job.message_id,
+                error="required evidence missing from compact text",
+                missing_tokens=missing_critical[:20],
+                missing_count=len(missing_critical),
+                missing_informative_count=len(missing_informative),
+            )
+            return None
+
+        compacted_at = self._now_iso()
+        self._set_message_compaction(
+            job.message_id,
+            status=COMPACT_STATUS_OK,
+            compact_text=compact_text,
+            compacted_at=compacted_at,
+            compact_model=self.compaction_options.model,
+        )
+        self.reindex_message(job.message_id)
+        self._log_event(
+            "message_compacted",
+            job_id=job.job_id,
+            message_id=job.message_id,
+            compact_model=self.compaction_options.model,
+            raw_chars=len(job.text),
+            compact_chars=len(compact_text),
+        )
+        if missing_informative:
+            self._log_event(
+                "message_compacted_with_warnings",
+                job_id=job.job_id,
+                message_id=job.message_id,
+                compact_model=self.compaction_options.model,
+                missing_tokens=missing_informative[:20],
+                missing_count=len(missing_informative),
+            )
+        return job.message_id
 
     def _parse_iso_datetime(self, value: str | None) -> datetime:
         if not value:
@@ -1191,6 +2195,14 @@ class MemoryStore:
         chunks = self.chunker.split(text, message_id, role)
         if not chunks:
             self._persist_message(self.raw_log[-1])
+            queued_job_ids = []
+            if extract_structured == "background":
+                job_id = self._queue_structured_extraction(role, text, message_id)
+                if job_id:
+                    queued_job_ids.append(job_id)
+            compact_job_id = self._maybe_compact_message(role, text, message_id)
+            if compact_job_id:
+                queued_job_ids.append(compact_job_id)
             self._log_event(
                 "message_saved",
                 role=role,
@@ -1198,6 +2210,7 @@ class MemoryStore:
                 content_hash=content_hash,
                 chunk_ids=[],
                 structured_object_ids=[],
+                queued_job_ids=queued_job_ids,
             )
             return AddMessageResult(
                 saved=True,
@@ -1206,24 +2219,17 @@ class MemoryStore:
                 content_hash=content_hash,
                 chunk_ids=[],
                 structured_object_ids=[],
-                queued_job_ids=[],
+                queued_job_ids=queued_job_ids,
             )
 
-        self.collection.add(
-            ids=[c.id for c in chunks],
-            documents=[c.text for c in chunks],
-            metadatas=[
-                {"message_id": c.message_id, "role": c.role, "importance": c.importance}
-                for c in chunks
-            ],
-        )
-        for c in chunks:
-            self.bm25.add(c.id, c.text)
+        self._add_chunks_to_index(chunks, "raw_chunk")
 
         queued_job_ids = []
         if extract_structured == "background":
             structured = []
-            queued_job_ids = [self._queue_structured_extraction(role, text, message_id)]
+            job_id = self._queue_structured_extraction(role, text, message_id)
+            if job_id:
+                queued_job_ids.append(job_id)
         elif extract_structured:
             structured = self._extract_structured_objects(role, text, message_id)
             self.structured.add_many(structured)
@@ -1235,6 +2241,9 @@ class MemoryStore:
 
         print(f"  [stored {len(chunks)} chunk(s) | total: {self.collection.count()}]")
         self._persist_message(self.raw_log[-1])
+        compact_job_id = self._maybe_compact_message(role, text, message_id)
+        if compact_job_id:
+            queued_job_ids.append(compact_job_id)
         self._log_event(
             "message_saved",
             role=role,
@@ -1284,63 +2293,114 @@ class MemoryStore:
                 payload["job_id"] = job_id
             self._log_event("structured_object_added", **payload)
 
-    def _queue_structured_extraction(self, role: str, text: str, message_id: int) -> str:
-        job = StructuredExtractionJob(
-            job_id=f"structured_{uuid.uuid4()}",
-            role=role,
-            text=text,
-            message_id=message_id,
-        )
-        self._pending_extractions.append(job)
+    def _queue_structured_extraction(self, role: str, text: str, message_id: int) -> str | None:
+        job_id = self.enqueue_job(JOB_TYPE_STRUCTURED_EXTRACT, message_id)
+        if job_id is None:
+            self._log_event(
+                "structured_extraction_queue_deduped",
+                message_id=message_id,
+            )
+            return None
         self._log_event(
             "structured_extraction_queued",
-            job_id=job.job_id,
+            job_id=job_id,
             message_id=message_id,
         )
-        return job.job_id
+        return job_id
 
     def run_pending_extractions(self, limit: int | None = None) -> list[str]:
         if limit is not None and limit <= 0:
             return []
-        max_jobs = len(self._pending_extractions) if limit is None else limit
-        remaining = []
+        max_jobs = None if limit is None else limit
         structured_object_ids = []
 
-        for job in self._pending_extractions:
-            if max_jobs <= 0:
-                remaining.append(job)
-                continue
-            max_jobs -= 1
-            if self._is_message_tombstoned(job.message_id):
+        while max_jobs is None or max_jobs > 0:
+            job = self.claim_next_job(JOB_TYPE_STRUCTURED_EXTRACT)
+            if job is None:
+                break
+            if max_jobs is not None:
+                max_jobs -= 1
+            try:
+                object_ids = self.process_background_job(job)
+            except Exception as exc:
+                self.complete_job(job.job_id, JOB_STATUS_FAILED, str(exc))
                 self._log_event(
-                    "structured_extraction_skipped",
+                    "background_job_failed",
                     job_id=job.job_id,
+                    job_type=job.job_type,
                     message_id=job.message_id,
-                    reason="message_tombstoned",
+                    error=str(exc),
                 )
                 continue
-            structured = self._extract_structured_objects(
-                job.role, job.text, job.message_id
-            )
-            self.structured.add_many(structured)
-            self._log_structured_objects_added(
-                structured,
-                reason="structured_extraction_completed",
-                job_id=job.job_id,
-            )
-            object_ids = [obj.id for obj in structured]
-            structured_object_ids.extend(object_ids)
-            self._log_event(
-                "structured_extraction_completed",
-                job_id=job.job_id,
-                message_id=job.message_id,
-                structured_object_ids=object_ids,
-            )
-            if structured:
-                print(f"  [structured {len(structured)} object(s) | total: {len(self.structured)}]")
-
-        self._pending_extractions = remaining
+            self.complete_job(job.job_id, JOB_STATUS_DONE)
+            structured_object_ids.extend(str(item) for item in object_ids)
         return structured_object_ids
+
+    def run_pending_compactions(self, limit: int | None = None) -> list[int]:
+        if limit is not None and limit <= 0:
+            return []
+        max_jobs = None if limit is None else limit
+        compacted_message_ids = []
+
+        while max_jobs is None or max_jobs > 0:
+            job = self.claim_next_job(JOB_TYPE_COMPACT)
+            if job is None:
+                break
+            if max_jobs is not None:
+                max_jobs -= 1
+            try:
+                message_ids = self.process_background_job(job)
+            except Exception as exc:
+                self.complete_job(job.job_id, JOB_STATUS_FAILED, str(exc))
+                self._log_event(
+                    "background_job_failed",
+                    job_id=job.job_id,
+                    job_type=job.job_type,
+                    message_id=job.message_id,
+                    error=str(exc),
+                )
+                continue
+            self.complete_job(job.job_id, JOB_STATUS_DONE)
+            compacted_message_ids.extend(int(item) for item in message_ids)
+        return compacted_message_ids
+
+    def compact_existing_messages(self, limit: int | None = None) -> list[int]:
+        if not self.compaction_options.enabled:
+            return []
+        query = """
+            SELECT message_id, role, text
+            FROM messages
+            WHERE compact_text IS NULL
+              AND (compact_status IS NULL OR compact_status = ?)
+              AND tombstoned = 0
+              AND length(text) >= ?
+            ORDER BY message_id
+        """
+        params: list[object] = [
+            COMPACT_STATUS_FAILED,
+            self.compaction_options.min_chars,
+        ]
+        if limit is not None:
+            if limit <= 0:
+                return []
+            query += " LIMIT ?"
+            params.append(limit)
+
+        with sqlite3.connect(self.state_db) as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        compacted_message_ids = []
+        for message_id, role, text in rows:
+            job = MessageCompactionJob(
+                job_id=f"compact_{uuid.uuid4()}",
+                role=role,
+                text=text,
+                message_id=message_id,
+            )
+            result = self._run_compaction_job(job)
+            if result is not None:
+                compacted_message_ids.append(result)
+        return compacted_message_ids
 
     # ── Retrieval (hybrid BM25 + embeddings via RRF) ──────────────────────────
 
@@ -1391,6 +2451,7 @@ class MemoryStore:
                 message_id=(meta or {}).get("message_id", (meta or {}).get("turn_id", 0)),
                 score=rrf_scores.get(id, 0.0),
                 rrf_score=rrf_scores.get(id, 0.0),
+                source=(meta or {}).get("source", "raw_chunk"),
             )
             for id, doc, meta in zip(fetched["ids"], fetched["documents"], fetched["metadatas"])
         }
@@ -1443,7 +2504,7 @@ class MemoryStore:
                 text=chunk.text,
                 score=chunk.score,
                 message_id=chunk.message_id,
-                source="raw_chunk",
+                source=chunk.source,
                 metadata={"importance": chunk.importance},
             )
             for chunk in self.retrieve(query, top_k=limit)
@@ -1609,6 +2670,7 @@ class MemoryStore:
                     text=text,
                     importance=metadata.get("importance", 0.5),
                     message_id=message_id,
+                    source=metadata.get("source", "raw_chunk"),
                 )
             )
         return chunks
