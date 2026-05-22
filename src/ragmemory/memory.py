@@ -41,22 +41,67 @@ def _load_settings_file(path: Path) -> None:
         section = parser["structured_memory"]
         if section.get("api_key"):
             os.environ.setdefault("NVIDIA_API_KEY", section["api_key"].strip())
+            os.environ.setdefault("RAGMEMORY_LLM_NVIDIA_API_KEY", section["api_key"].strip())
+        if section.get("provider") and not (
+            parser.has_section("llm") and parser["llm"].get("structured_provider")
+        ):
+            os.environ.setdefault("RAGMEMORY_STRUCTURED_PROVIDER", section["provider"].strip())
         if section.get("model"):
             os.environ.setdefault("STRUCTURED_MEMORY_MODEL", section["model"].strip())
+        if section.get("max_chars"):
+            os.environ.setdefault("RAGMEMORY_STRUCTURED_MAX_CHARS", section["max_chars"].strip())
+        if section.get("max_tokens"):
+            os.environ.setdefault("RAGMEMORY_STRUCTURED_MAX_TOKENS", section["max_tokens"].strip())
     if parser.has_section("compact"):
         section = parser["compact"]
         if section.get("enable"):
             os.environ.setdefault("RAGMEMORY_COMPACT_ENABLE", section["enable"].strip())
+        if section.get("provider") and not (
+            parser.has_section("llm") and parser["llm"].get("compact_provider")
+        ):
+            os.environ.setdefault("RAGMEMORY_COMPACT_PROVIDER", section["provider"].strip())
         if section.get("model"):
             os.environ.setdefault("RAGMEMORY_COMPACT_MODEL", section["model"].strip())
         if section.get("min_chars"):
             os.environ.setdefault("RAGMEMORY_COMPACT_MIN_CHARS", section["min_chars"].strip())
         if section.get("max_chars"):
             os.environ.setdefault("RAGMEMORY_COMPACT_MAX_CHARS", section["max_chars"].strip())
+        if section.get("max_tokens"):
+            os.environ.setdefault("RAGMEMORY_COMPACT_MAX_TOKENS", section["max_tokens"].strip())
         if section.get("target_ratio"):
             os.environ.setdefault("RAGMEMORY_COMPACT_TARGET_RATIO", section["target_ratio"].strip())
         if section.get("mode"):
             os.environ.setdefault("RAGMEMORY_COMPACT_MODE", section["mode"].strip())
+    if parser.has_section("llm"):
+        section = parser["llm"]
+        if section.get("structured_provider"):
+            os.environ.setdefault("RAGMEMORY_STRUCTURED_PROVIDER", section["structured_provider"].strip())
+        if section.get("compact_provider"):
+            os.environ.setdefault("RAGMEMORY_COMPACT_PROVIDER", section["compact_provider"].strip())
+    for section_name in parser.sections():
+        if not section_name.startswith("llm."):
+            continue
+        provider = section_name.split(".", 1)[1].strip()
+        if not provider:
+            continue
+        prefix = _provider_env_prefix(provider)
+        section = parser[section_name]
+        for key, env_suffix in (
+            ("api_key", "API_KEY"),
+            ("base_url", "BASE_URL"),
+            ("model", "MODEL"),
+            ("api_style", "API_STYLE"),
+            ("thinking", "THINKING"),
+        ):
+            if section.get(key):
+                os.environ.setdefault(f"{prefix}_{env_suffix}", section[key].strip())
+        if provider.lower() == "nvidia" and section.get("api_key"):
+            os.environ.setdefault("NVIDIA_API_KEY", section["api_key"].strip())
+
+
+def _provider_env_prefix(provider: str) -> str:
+    provider_key = re.sub(r"[^A-Za-z0-9]+", "_", provider.strip()).strip("_").upper()
+    return f"RAGMEMORY_LLM_{provider_key}"
 
 
 def _load_local_config() -> None:
@@ -141,9 +186,16 @@ DEFAULT_HALF_LIFE_DAYS = {
     "identity": 365.0,
 }
 NVIDIA_API_KEY_ENV = "NVIDIA_API_KEY"
+DEFAULT_LLM_PROVIDER = "nvidia"
+DEFAULT_NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+DEFAULT_OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+DEFAULT_OPENCODE_GO_MODEL = "deepseek-v4-flash"
+LLM_API_STYLE_OPENAI_CHAT = "openai_chat"
 STRUCTURED_MEMORY_MODEL = os.environ.get(
     "STRUCTURED_MEMORY_MODEL", "minimaxai/minimax-m2.7"
 )
+DEFAULT_STRUCTURED_MAX_CHARS = 6000
+DEFAULT_STRUCTURED_MAX_TOKENS = 900
 STRUCTURED_TYPES = {
     "decision", "preference", "constraint", "config", "table",
     "code_reference", "chart", "open_question",
@@ -152,8 +204,10 @@ EXACT_ARTIFACT_TYPES = {"config", "table", "chart"}
 DEFAULT_COMPACT_MODEL = STRUCTURED_MEMORY_MODEL
 DEFAULT_COMPACT_MIN_CHARS = 1500
 DEFAULT_COMPACT_MAX_CHARS = 30000
+DEFAULT_COMPACT_MAX_TOKENS = 1200
 DEFAULT_COMPACT_TARGET_RATIO = 0.35
 DEFAULT_COMPACT_MODE = "background"
+DEFAULT_COMPACT_PROVIDER = os.environ.get("RAGMEMORY_COMPACT_PROVIDER", DEFAULT_LLM_PROVIDER)
 COMPACT_STATUS_OK = "ok"
 COMPACT_STATUS_FAILED = "failed"
 COMPACT_STATUS_SKIPPED_SHORT = "skipped_short"
@@ -299,11 +353,126 @@ class AddMessageResult:
 
 
 @dataclass
+class LLMProviderOptions:
+    provider: str = DEFAULT_LLM_PROVIDER
+    api_key: str | None = None
+    base_url: str = DEFAULT_NVIDIA_BASE_URL
+    model: str = STRUCTURED_MEMORY_MODEL
+    api_style: str = LLM_API_STYLE_OPENAI_CHAT
+    extra_body: dict | None = None
+
+    @classmethod
+    def from_env(cls, provider: str, fallback_model: str) -> "LLMProviderOptions":
+        provider = (provider or DEFAULT_LLM_PROVIDER).strip().lower()
+        prefix = _provider_env_prefix(provider)
+        api_key = os.environ.get(f"{prefix}_API_KEY")
+        base_url = os.environ.get(f"{prefix}_BASE_URL")
+        model = os.environ.get(f"{prefix}_MODEL")
+        api_style = os.environ.get(f"{prefix}_API_STYLE", LLM_API_STYLE_OPENAI_CHAT)
+        thinking = os.environ.get(f"{prefix}_THINKING", "").strip().lower()
+
+        if provider == "nvidia":
+            api_key = api_key or os.environ.get(NVIDIA_API_KEY_ENV)
+            base_url = base_url or DEFAULT_NVIDIA_BASE_URL
+            model = model or fallback_model
+        elif provider == "opencode_go":
+            base_url = base_url or DEFAULT_OPENCODE_GO_BASE_URL
+            model = model or DEFAULT_OPENCODE_GO_MODEL
+        else:
+            base_url = base_url or ""
+            model = model or fallback_model
+
+        return cls(
+            provider=provider,
+            api_key=api_key.strip() if api_key else None,
+            base_url=base_url.rstrip("/"),
+            model=model.strip(),
+            api_style=api_style.strip().lower(),
+            extra_body=cls._extra_body_for(provider, thinking),
+        )
+
+    @staticmethod
+    def _extra_body_for(provider: str, thinking: str) -> dict | None:
+        if provider != "opencode_go" or not thinking:
+            return None
+        if thinking == "disabled":
+            return {"thinking": {"type": "disabled"}}
+        if thinking == "enabled":
+            return {"thinking": {"type": "enabled"}}
+        return None
+
+
+@dataclass
+class StructuredExtractionOptions:
+    max_chars: int = DEFAULT_STRUCTURED_MAX_CHARS
+    max_tokens: int = DEFAULT_STRUCTURED_MAX_TOKENS
+
+    @classmethod
+    def from_env(cls) -> "StructuredExtractionOptions":
+        return cls(
+            max_chars=max(1, _env_int("RAGMEMORY_STRUCTURED_MAX_CHARS", DEFAULT_STRUCTURED_MAX_CHARS)),
+            max_tokens=max(1, _env_int("RAGMEMORY_STRUCTURED_MAX_TOKENS", DEFAULT_STRUCTURED_MAX_TOKENS)),
+        )
+
+
+class LLMProviderClient:
+    def __init__(self, options: LLMProviderOptions):
+        self.options = options
+        self.client = None
+        self.last_error: str | None = None
+
+    def _client(self):
+        if self.client:
+            return self.client
+        if not self.options.api_key:
+            self.last_error = f"{self.options.provider} API key missing"
+            return None
+        if not self.options.base_url:
+            self.last_error = f"{self.options.provider} base_url missing"
+            return None
+        from openai import OpenAI
+
+        self.client = OpenAI(
+            base_url=self.options.base_url,
+            api_key=self.options.api_key,
+        )
+        return self.client
+
+    def complete_chat(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        temperature: float = 0,
+    ) -> str | None:
+        self.last_error = None
+        if self.options.api_style != LLM_API_STYLE_OPENAI_CHAT:
+            self.last_error = f"unsupported api_style: {self.options.api_style}"
+            return None
+        client = self._client()
+        if client is None:
+            return None
+        try:
+            response = client.chat.completions.create(
+                model=self.options.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                extra_body=self.options.extra_body,
+            )
+        except Exception as exc:
+            self.last_error = str(exc)
+            return None
+        return (response.choices[0].message.content or "").strip()
+
+
+@dataclass
 class MessageCompactionOptions:
     enabled: bool = False
+    provider: str = DEFAULT_COMPACT_PROVIDER
     model: str = DEFAULT_COMPACT_MODEL
     min_chars: int = DEFAULT_COMPACT_MIN_CHARS
     max_chars: int = DEFAULT_COMPACT_MAX_CHARS
+    max_tokens: int = DEFAULT_COMPACT_MAX_TOKENS
     target_ratio: float = DEFAULT_COMPACT_TARGET_RATIO
     mode: str = DEFAULT_COMPACT_MODE
 
@@ -314,9 +483,11 @@ class MessageCompactionOptions:
             mode = DEFAULT_COMPACT_MODE
         return cls(
             enabled=_env_bool("RAGMEMORY_COMPACT_ENABLE", False),
+            provider=os.environ.get("RAGMEMORY_COMPACT_PROVIDER", DEFAULT_COMPACT_PROVIDER).strip().lower(),
             model=os.environ.get("RAGMEMORY_COMPACT_MODEL", DEFAULT_COMPACT_MODEL).strip(),
             min_chars=max(0, _env_int("RAGMEMORY_COMPACT_MIN_CHARS", DEFAULT_COMPACT_MIN_CHARS)),
             max_chars=max(0, _env_int("RAGMEMORY_COMPACT_MAX_CHARS", DEFAULT_COMPACT_MAX_CHARS)),
+            max_tokens=max(1, _env_int("RAGMEMORY_COMPACT_MAX_TOKENS", DEFAULT_COMPACT_MAX_TOKENS)),
             target_ratio=max(
                 0.05,
                 min(_env_float("RAGMEMORY_COMPACT_TARGET_RATIO", DEFAULT_COMPACT_TARGET_RATIO), 1.0),
@@ -643,44 +814,39 @@ class ExactArtifactExtractor:
 
 
 class StructuredMemoryExtractor:
-    def __init__(self):
-        self.client = None
-
-    def _client(self):
-        if self.client:
-            return self.client
-        api_key = os.environ.get(NVIDIA_API_KEY_ENV)
-        if not api_key:
-            return None
-        from openai import OpenAI
-
-        self.client = OpenAI(
-            base_url="https://integrate.api.nvidia.com/v1",
-            api_key=api_key,
+    def __init__(
+        self,
+        options: LLMProviderOptions | None = None,
+        extraction_options: StructuredExtractionOptions | None = None,
+    ):
+        provider = os.environ.get("RAGMEMORY_STRUCTURED_PROVIDER", DEFAULT_LLM_PROVIDER)
+        self.llm = LLMProviderClient(
+            options or LLMProviderOptions.from_env(provider, STRUCTURED_MEMORY_MODEL)
         )
-        return self.client
+        self.options = extraction_options or StructuredExtractionOptions.from_env()
 
     def extract(self, role: str, text: str, message_id: int) -> list[StructuredMemoryObject]:
-        client = self._client()
-        if not client or not text.strip():
+        if not text.strip():
+            return []
+        if not self.llm.options.api_key:
             return []
 
         prompt = self._build_prompt(role, text)
-        try:
-            response = client.chat.completions.create(
-                model=STRUCTURED_MEMORY_MODEL,
-                messages=[
-                    {"role": "system", "content": "Extract only durable memory objects. Return strict JSON only."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0,
-                max_tokens=900,
+        content = self.llm.complete_chat(
+            messages=[
+                {"role": "system", "content": "Extract only durable memory objects. Return strict JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            max_tokens=self.options.max_tokens,
+        )
+        if content is None:
+            print(
+                f"  [structured skipped] {self.llm.options.provider} extraction failed: "
+                f"{self.llm.last_error}"
             )
-        except Exception as exc:
-            print(f"  [structured skipped] NVIDIA extraction failed: {exc}")
             return []
 
-        content = response.choices[0].message.content or ""
         data = self._parse_json(content)
         objects = data.get("objects", []) if isinstance(data, dict) else []
         return [obj for item in objects if (obj := self._coerce_object(item, role, message_id))]
@@ -724,7 +890,7 @@ Return JSON in this exact shape:
 }}
 
 Message:
-{text[:6000]}
+{text[:self.options.max_chars]}
 """
 
     def _parse_json(self, content: str) -> dict:
@@ -777,24 +943,12 @@ Message:
 
 
 class MessageCompactor:
-    def __init__(self, model: str):
-        self.model = model
+    def __init__(self, options: LLMProviderOptions, max_tokens: int = DEFAULT_COMPACT_MAX_TOKENS):
+        self.options = options
+        self.model = options.model
+        self.max_tokens = max_tokens
         self.last_error: str | None = None
-        self.client = None
-
-    def _client(self):
-        if self.client:
-            return self.client
-        api_key = os.environ.get(NVIDIA_API_KEY_ENV)
-        if not api_key:
-            return None
-        from openai import OpenAI
-
-        self.client = OpenAI(
-            base_url="https://integrate.api.nvidia.com/v1",
-            api_key=api_key,
-        )
-        return self.client
+        self.llm = LLMProviderClient(options)
 
     def compact(
         self,
@@ -804,41 +958,34 @@ class MessageCompactor:
         evidence_refs: list[EvidenceReference] | None = None,
     ) -> str | None:
         self.last_error = None
-        client = self._client()
-        if not client:
-            self.last_error = "NVIDIA API key missing"
-            return None
         if not text.strip():
             self.last_error = "empty message"
             return None
 
-        try:
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Compact noisy chat memory while preserving exact technical evidence.",
-                    },
-                    {
-                        "role": "user",
-                        "content": self._build_prompt(
-                            role,
-                            text,
-                            target_ratio,
-                            evidence_refs or [],
-                        ),
-                    },
-                ],
-                temperature=0,
-                max_tokens=1200,
-            )
-        except Exception as exc:
-            self.last_error = str(exc)
-            print(f"  [compact skipped] NVIDIA compaction failed: {exc}")
+        compact_text = self.llm.complete_chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Compact noisy chat memory while preserving exact technical evidence.",
+                },
+                {
+                    "role": "user",
+                    "content": self._build_prompt(
+                        role,
+                        text,
+                        target_ratio,
+                        evidence_refs or [],
+                    ),
+                },
+            ],
+            temperature=0,
+            max_tokens=self.max_tokens,
+        )
+        if compact_text is None:
+            self.last_error = self.llm.last_error or "unknown compaction failure"
+            print(f"  [compact skipped] {self.options.provider} compaction failed: {self.last_error}")
             return None
 
-        compact_text = (response.choices[0].message.content or "").strip()
         if not compact_text:
             self.last_error = "empty compact text"
             return None
@@ -1033,13 +1180,25 @@ class MemoryStore:
             self.structured_collection,
         )
         self.compaction_options = MessageCompactionOptions.from_env()
-        self.compactor = MessageCompactor(self.compaction_options.model)
+        self.structured_extraction_options = StructuredExtractionOptions.from_env()
+        compact_llm_options = LLMProviderOptions.from_env(
+            self.compaction_options.provider,
+            self.compaction_options.model,
+        )
+        self.compaction_options.model = compact_llm_options.model
+        self.compactor = MessageCompactor(
+            compact_llm_options,
+            max_tokens=self.compaction_options.max_tokens,
+        )
         self.artifact_extractor = ExactArtifactExtractor()
-        self.structured_extractor = StructuredMemoryExtractor()
+        self.structured_extractor = StructuredMemoryExtractor(
+            extraction_options=self.structured_extraction_options,
+        )
         self.bm25 = BM25Index()
         self.raw_log: list[dict] = []
         self._message_hashes: dict[tuple[str, str], int] = {}
         self._tombstoned_message_ids: set[int] = set()
+        self.last_compact_backfill_attempts: list[dict] = []
         self._recall_options = RecallOptions()
         self.message_id = 0
 
@@ -2365,6 +2524,7 @@ class MemoryStore:
         return compacted_message_ids
 
     def compact_existing_messages(self, limit: int | None = None) -> list[int]:
+        self.last_compact_backfill_attempts = []
         if not self.compaction_options.enabled:
             return []
         query = """
@@ -2391,6 +2551,7 @@ class MemoryStore:
 
         compacted_message_ids = []
         for message_id, role, text in rows:
+            before_events = self.events_file.stat().st_size if self.events_file.exists() else 0
             job = MessageCompactionJob(
                 job_id=f"compact_{uuid.uuid4()}",
                 role=role,
@@ -2398,9 +2559,48 @@ class MemoryStore:
                 message_id=message_id,
             )
             result = self._run_compaction_job(job)
+            self.last_compact_backfill_attempts.append(
+                self._compact_attempt_summary(
+                    message_id,
+                    before_events,
+                    result is not None,
+                )
+            )
             if result is not None:
                 compacted_message_ids.append(result)
         return compacted_message_ids
+
+    def _compact_attempt_summary(self, message_id: int, event_offset: int, compacted: bool) -> dict:
+        summary = {
+            "message_id": message_id,
+            "status": COMPACT_STATUS_OK if compacted else COMPACT_STATUS_FAILED,
+            "reason": "",
+            "missing_tokens": [],
+        }
+        if not self.events_file.exists():
+            return summary
+        with self.events_file.open("r", encoding="utf-8") as f:
+            f.seek(event_offset)
+            for line in f:
+                if not line.strip():
+                    continue
+                event = json.loads(line)
+                if event.get("message_id") != message_id:
+                    continue
+                event_name = event.get("event")
+                if event_name == "message_compacted":
+                    summary["status"] = COMPACT_STATUS_OK
+                    summary["reason"] = ""
+                elif event_name == "message_compacted_with_warnings":
+                    summary["missing_tokens"] = event.get("missing_tokens", [])
+                elif event_name == "message_compaction_failed":
+                    summary["status"] = COMPACT_STATUS_FAILED
+                    summary["reason"] = event.get("error", "")
+                    summary["missing_tokens"] = event.get("missing_tokens", [])
+                elif event_name == "message_compaction_skipped":
+                    summary["status"] = event.get("reason", "skipped")
+                    summary["reason"] = event.get("reason", "")
+        return summary
 
     # ── Retrieval (hybrid BM25 + embeddings via RRF) ──────────────────────────
 

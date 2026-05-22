@@ -12,9 +12,9 @@ novels/
 ragmemory.local.ini
 
 # Generated memory databases and smoke-test data
-.data/
-chroma*/
-**/chroma*/
+#.data/
+#chroma*/
+#**/chroma*/
 .*_smoke/
 
 # Local editor/system noise

@@ -1,0 +1,13 @@
+{"event": "Stop", "keys": ["hook_event_name", "last_assistant_message"], "has_last_assistant_message": true, "has_transcript_path": false, "saved": true}
+{"event": "Stop", "keys": ["hook_event_name", "transcript_path"], "has_last_assistant_message": false, "has_transcript_path": true, "saved": true}
+{"event": "Stop", "keys": ["hook_event_name", "last_assistant_message"], "has_last_assistant_message": true, "has_transcript_path": false, "saved": true}
+{"event": "Stop", "keys": ["hook_event_name", "last_assistant_message"], "has_last_assistant_message": true, "has_transcript_path": false, "saved": true}
+{"event": "Stop", "keys": ["hook_event_name", "last_assistant_message"], "has_last_assistant_message": true, "has_transcript_path": false, "saved": true}
+{"event": "Stop", "keys": ["hook_event_name", "last_assistant_message"], "has_last_assistant_message": true, "has_transcript_path": false, "saved": true}
+{"event": "Stop", "keys": ["cwd", "hook_event_name", "last_assistant_message", "model", "permission_mode", "session_id", "stop_hook_active", "transcript_path", "turn_id"], "has_last_assistant_message": true, "has_transcript_path": true, "saved": true}
+{"event": "Stop", "keys": ["cwd", "hook_event_name", "last_assistant_message", "model", "permission_mode", "session_id", "stop_hook_active", "transcript_path", "turn_id"], "has_last_assistant_message": true, "has_transcript_path": true, "saved": true}
+{"event": "Stop", "keys": ["cwd", "hook_event_name", "last_assistant_message", "model", "permission_mode", "session_id", "stop_hook_active", "transcript_path", "turn_id"], "has_last_assistant_message": true, "has_transcript_path": true, "saved": true}
+{"event": "Stop", "keys": ["hook_event_name", "last_assistant_message"], "has_last_assistant_message": true, "has_transcript_path": false, "saved": true}
+{"event": "Stop", "keys": ["hook_event_name", "last_assistant_message"], "has_last_assistant_message": true, "has_transcript_path": false, "saved": true}
+{"event": "Stop", "keys": ["hook_event_name", "last_assistant_message"], "has_last_assistant_message": true, "has_transcript_path": false, "saved": true}
+{"event": "Stop", "keys": ["hook_event_name", "last_assistant_message"], "has_last_assistant_message": true, "has_transcript_path": false, "saved": true}

@@ -42,17 +42,62 @@ Edit `ragmemory.local.ini` and add your API key:
 [structured_memory]
 api_key = your-nvidia-api-key
 model = minimaxai/minimax-m2.7
+max_chars = 6000
+max_tokens = 900
+
+[llm]
+structured_provider = nvidia
+compact_provider = nvidia
+
+[llm.nvidia]
+api_key = your-nvidia-api-key
+base_url = https://integrate.api.nvidia.com/v1
+model = minimaxai/minimax-m2.7
+api_style = openai_chat
 
 [compact]
 enable = true
 model = minimaxai/minimax-m2.7
 min_chars = 1500
 max_chars = 30000
+max_tokens = 1200
 target_ratio = 0.35
 mode = background
 ```
 
 `ragmemory.local.ini` is ignored by git. Do not commit it.
+
+### Optional: OpenCode Go For Compaction
+
+RagMemory can use different LLM providers for structured extraction and message
+compaction. Keep structured extraction on NVIDIA first, and try OpenCode Go for
+compaction:
+
+```ini
+[llm]
+structured_provider = nvidia
+compact_provider = opencode_go
+
+[llm.opencode_go]
+api_key = your-opencode-go-api-key
+base_url = https://opencode.ai/zen/go/v1
+model = deepseek-v4-flash
+api_style = openai_chat
+thinking = disabled
+
+[compact]
+enable = true
+max_tokens = 4096
+```
+
+Smoke-test a provider without writing to the DB:
+
+```powershell
+uv run python scripts/test_llm_provider.py --provider opencode_go
+```
+
+Only `openai_chat` providers are supported for now. OpenCode Go models that use
+`/messages` need a separate adapter later.
 
 ## Use With Codex Hooks
 
@@ -265,6 +310,15 @@ uv run python scripts/compact_backfill.py --limit 20
 
 If NVIDIA returns `429 Too Many Requests`, wait a minute and retry with a
 smaller limit. Stop the worker during large backfills to reduce overlap.
+
+Reasoning-heavy providers may spend output tokens on internal reasoning before
+returning final compact text. For those providers, raise the compact output
+limit:
+
+```ini
+[compact]
+max_tokens = 4096
+```
 
 After changing compaction behavior, rebuild the retrieval index:
 

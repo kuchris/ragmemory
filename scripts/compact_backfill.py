@@ -33,12 +33,32 @@ def main() -> None:
         return
 
     message_ids = store.compact_existing_messages(limit=args.limit)
-    if not message_ids:
-        print("No messages compacted.")
-        return
+    attempts = store.last_compact_backfill_attempts
+    if attempts:
+        joined_attempts = ", ".join(str(item["message_id"]) for item in attempts)
+        print(f"Attempted {len(attempts)} message(s): {joined_attempts}")
 
-    joined_ids = ", ".join(str(message_id) for message_id in message_ids)
-    print(f"Compacted {len(message_ids)} message(s): {joined_ids}")
+    if message_ids:
+        joined_ids = ", ".join(str(message_id) for message_id in message_ids)
+        print(f"Compacted {len(message_ids)} message(s): {joined_ids}")
+    else:
+        print("Compacted 0 message(s).")
+
+    failed = [item for item in attempts if item["status"] != "ok"]
+    if failed:
+        print("Failures/skips:")
+        for item in failed:
+            reason = item["reason"] or item["status"]
+            print(f"  {item['message_id']}: {reason}")
+            missing_tokens = item.get("missing_tokens") or []
+            if missing_tokens:
+                preview = ", ".join(str(token) for token in missing_tokens[:5])
+                if len(missing_tokens) > 5:
+                    preview += ", ..."
+                print(f"    missing: {preview}")
+
+    if not attempts:
+        print("No eligible messages found.")
 
 
 if __name__ == "__main__":
