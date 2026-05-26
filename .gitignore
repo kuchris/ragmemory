@@ -10,6 +10,8 @@ novels/
 .env
 .env.*
 ragmemory.local.ini
+.codegraph/
+.mcp.json
 
 # Generated memory databases and smoke-test data
 .data/

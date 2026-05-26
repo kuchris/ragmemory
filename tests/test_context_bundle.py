@@ -139,6 +139,81 @@ try:
     compat_store.retrieve = fake_retrieve
     compat_bundle = compat_store.build_context_bundle("context bundle")
     assert format_for_prompt(compat_bundle) == compat_store.build_context("context bundle")
+
+    dropped_recent_text = "DROPPED_RECENT_CAN_RETURN from retrieval."
+    budget_store = MemoryStore(db_path=str(DB_PATH))
+    budget_store.raw_log = [
+        {
+            "role": "user",
+            "text": "ok",
+            "message_id": 20,
+            "content_hash": "recent-ok",
+        },
+        {
+            "role": "assistant",
+            "text": dropped_recent_text,
+            "message_id": 21,
+            "content_hash": "recent-drop",
+        },
+    ]
+    budget_store.retrieve_structured = lambda _query, top_k=memory.STRUCTURED_TOP_K: []
+    budget_store.retrieve = lambda _query, top_k=memory.RETRIEVE_TOP_K: [
+        RetrievedChunk(
+            id="dropped-recent-returned",
+            text=dropped_recent_text,
+            importance=0.5,
+            message_id=21,
+            score=0.9,
+        )
+    ]
+    budget_store.configure_recall(
+        retrieve_top_k=1,
+        structured_top_k=0,
+        context_token_budget=40,
+        recent_messages=2,
+        include_recent=True,
+        include_structured=False,
+        recent_token_budget_ratio=0.1,
+    )
+    budget_bundle = budget_store.build_context_bundle("budget")
+    assert [message.text for message in budget_bundle.recent] == ["ok"]
+    assert [chunk.id for chunk in budget_bundle.kept] == ["dropped-recent-returned"]
+
+    budget_store.configure_recall(
+        retrieve_top_k=1,
+        structured_top_k=0,
+        context_token_budget=40,
+        recent_messages=2,
+        include_recent=True,
+        include_structured=False,
+        recent_token_budget_ratio=0,
+    )
+    no_recent_bundle = budget_store.build_context_bundle("budget")
+    assert no_recent_bundle.recent == []
+    assert [chunk.id for chunk in no_recent_bundle.kept] == ["dropped-recent-returned"]
+
+    budget_store.raw_log = [
+        {
+            "role": "assistant",
+            "text": "fits within full budget",
+            "message_id": 22,
+            "content_hash": "recent-fit",
+        }
+    ]
+    budget_store.retrieve = lambda _query, top_k=memory.RETRIEVE_TOP_K: []
+    budget_store.configure_recall(
+        retrieve_top_k=0,
+        structured_top_k=0,
+        context_token_budget=10,
+        recent_messages=1,
+        include_recent=True,
+        include_structured=False,
+        recent_token_budget_ratio=9,
+    )
+    clamped_bundle = budget_store.build_context_bundle("budget")
+    assert [message.text for message in clamped_bundle.recent] == [
+        "fits within full budget"
+    ]
 finally:
     memory.CONTEXT_TOKEN_BUDGET = original_budget
     memory.RECENT_MESSAGES = original_recent

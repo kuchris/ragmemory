@@ -43,6 +43,13 @@ def main() -> None:
         default="ragmemory.local.ini",
         help="Config file for Obsidian export topic/file policies.",
     )
+    parser.add_argument(
+        "--retry-failed",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Retry up to N previously failed compactions per sweep (0 to disable).",
+    )
     args = parser.parse_args()
 
     db_path = Path(args.db_path)
@@ -58,6 +65,15 @@ def main() -> None:
         while True:
             job = store.claim_next_job()
             if job is None:
+                if args.retry_failed > 0:
+                    retried = store.compact_existing_messages(
+                        limit=args.retry_failed, max_attempts=3
+                    )
+                    if retried:
+                        print(
+                            f"Retried {len(retried)} failed compaction(s): "
+                            f"{retried}"
+                        )
                 if args.once:
                     break
                 time.sleep(args.sleep)

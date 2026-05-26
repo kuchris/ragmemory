@@ -1,5 +1,5 @@
 """
-Rebuild Chroma/BM25 chat chunks from SQLite messages.
+Rebuild Chroma/BM25 chat chunks and structured-memory embeddings.
 
 Compact messages use messages.compact_text; all others fall back to messages.text.
 
@@ -25,7 +25,9 @@ def main() -> None:
 
     store = MemoryStore(db_path=str(Path(args.db_path)))
     chunk_count = store.rebuild_chat_memory_index()
+    structured_count = store.rebuild_structured_memory_index()
     print(f"Rebuilt chat memory index with {chunk_count} chunk(s).")
+    print(f"Rebuilt structured memory index with {structured_count} object(s).")
 
 
 if __name__ == "__main__":

@@ -5,12 +5,45 @@ import json
 import hashlib
 import sqlite3
 import configparser
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import chromadb
-from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
-from rank_bm25 import BM25Okapi
+
+from .artifacts import ExactArtifactExtractor, FENCED_BLOCK_RE, TABLE_SEPARATOR_RE
+from .bm25 import BM25Index
+from .chunker import CHUNK_MAX_TOKENS, CHUNK_MIN_TOKENS, HEADER_RE, Chunker
+from .embeddings import EmbeddingOptions, build_embedding_function
+from .ledger import MISSING_CTX_PHRASES, RemovalLedger
+from .llm import (
+    DEFAULT_LLM_PROVIDER,
+    DEFAULT_NVIDIA_BASE_URL,
+    DEFAULT_OPENCODE_GO_BASE_URL,
+    DEFAULT_OPENCODE_GO_MODEL,
+    LLMProviderClient,
+    LLMProviderOptions,
+    LLM_API_STYLE_OPENAI_CHAT,
+    NVIDIA_API_KEY_ENV,
+    provider_env_prefix as _provider_env_prefix,
+)
+from .models import (
+    AddMessageResult,
+    BackgroundJob,
+    Chunk,
+    ContextBundle,
+    EvidenceReference,
+    ForgetPreview,
+    ForgetResult,
+    LedgerEntry,
+    MemoryMetadata,
+    MessageCompactionJob,
+    MessageRecord,
+    RecallOptions,
+    RetrievedChunk,
+    SearchResult,
+    StructuredMemoryObject,
+    evidence_content_hash,
+    score_importance,
+)
 
 
 def _load_env_file(path: Path) -> None:
@@ -72,6 +105,16 @@ def _load_settings_file(path: Path) -> None:
             os.environ.setdefault("RAGMEMORY_COMPACT_TARGET_RATIO", section["target_ratio"].strip())
         if section.get("mode"):
             os.environ.setdefault("RAGMEMORY_COMPACT_MODE", section["mode"].strip())
+    if parser.has_section("embedding"):
+        section = parser["embedding"]
+        for key, env_name in (
+            ("provider", "RAGMEMORY_EMBEDDING_PROVIDER"),
+            ("model", "RAGMEMORY_EMBEDDING_MODEL"),
+            ("device", "RAGMEMORY_EMBEDDING_DEVICE"),
+            ("normalize_embeddings", "RAGMEMORY_EMBEDDING_NORMALIZE"),
+        ):
+            if section.get(key):
+                os.environ.setdefault(env_name, section[key].strip())
     if parser.has_section("llm"):
         section = parser["llm"]
         if section.get("structured_provider"):
@@ -99,11 +142,6 @@ def _load_settings_file(path: Path) -> None:
             os.environ.setdefault("NVIDIA_API_KEY", section["api_key"].strip())
 
 
-def _provider_env_prefix(provider: str) -> str:
-    provider_key = re.sub(r"[^A-Za-z0-9]+", "_", provider.strip()).strip("_").upper()
-    return f"RAGMEMORY_LLM_{provider_key}"
-
-
 def _load_local_config() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     seen = set()
@@ -128,48 +166,35 @@ def _load_local_config() -> None:
 _load_local_config()
 
 
-def evidence_content_hash(text: str, ev_type: str) -> str:
-    # Schema v1: normalize line endings and trim outer whitespace.
-    # Do not lowercase block/code evidence; exact casing is part of the evidence.
-    # Keep this stable, because compact_text evidence refs depend on it.
-    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
-    if ev_type in {"path", "url"}:
-        normalized = normalized.lower()
-    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:EVIDENCE_REF_HASH_CHARS]
+from .compaction import (
+    COMPACT_STATUS_FAILED,
+    COMPACT_STATUS_OK,
+    COMPACT_STATUS_SKIPPED_SHORT,
+    COMPACT_STATUS_TOO_LONG,
+    DEFAULT_COMPACT_MAX_CHARS,
+    DEFAULT_COMPACT_MAX_TOKENS,
+    DEFAULT_COMPACT_MIN_CHARS,
+    DEFAULT_COMPACT_MODE,
+    DEFAULT_COMPACT_MODEL,
+    DEFAULT_COMPACT_PROVIDER,
+    DEFAULT_COMPACT_TARGET_RATIO,
+    MessageCompactionOptions,
+    MessageCompactor,
+)
+from .structured import (
+    DEFAULT_STRUCTURED_MAX_CHARS,
+    DEFAULT_STRUCTURED_MAX_TOKENS,
+    STRUCTURED_MEMORY_MODEL,
+    STRUCTURED_TOP_K,
+    STRUCTURED_TYPES,
+    StructuredExtractionOptions,
+    StructuredMemoryExtractor,
+    StructuredMemoryStore,
+)
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_int(name: str, default: int) -> int:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    try:
-        return int(value.strip())
-    except ValueError:
-        return default
-
-
-def _env_float(name: str, default: float) -> float:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    try:
-        return float(value.strip())
-    except ValueError:
-        return default
-
-
-CHUNK_MAX_TOKENS = 300
-CHUNK_MIN_TOKENS = 80
 RECENT_MESSAGES = 12
 RETRIEVE_TOP_K = 5
-STRUCTURED_TOP_K = 3
 CONTEXT_TOKEN_BUDGET = 2000
 RRF_K = 60  # reciprocal rank fusion constant
 DECAY_FETCH_MIN = 50
@@ -185,33 +210,7 @@ DEFAULT_HALF_LIFE_DAYS = {
     "preference": 180.0,
     "identity": 365.0,
 }
-NVIDIA_API_KEY_ENV = "NVIDIA_API_KEY"
-DEFAULT_LLM_PROVIDER = "nvidia"
-DEFAULT_NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-DEFAULT_OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
-DEFAULT_OPENCODE_GO_MODEL = "deepseek-v4-flash"
-LLM_API_STYLE_OPENAI_CHAT = "openai_chat"
-STRUCTURED_MEMORY_MODEL = os.environ.get(
-    "STRUCTURED_MEMORY_MODEL", "minimaxai/minimax-m2.7"
-)
-DEFAULT_STRUCTURED_MAX_CHARS = 6000
-DEFAULT_STRUCTURED_MAX_TOKENS = 900
-STRUCTURED_TYPES = {
-    "decision", "preference", "constraint", "config", "table",
-    "code_reference", "chart", "open_question",
-}
 EXACT_ARTIFACT_TYPES = {"config", "table", "chart"}
-DEFAULT_COMPACT_MODEL = STRUCTURED_MEMORY_MODEL
-DEFAULT_COMPACT_MIN_CHARS = 1500
-DEFAULT_COMPACT_MAX_CHARS = 30000
-DEFAULT_COMPACT_MAX_TOKENS = 1200
-DEFAULT_COMPACT_TARGET_RATIO = 0.35
-DEFAULT_COMPACT_MODE = "background"
-DEFAULT_COMPACT_PROVIDER = os.environ.get("RAGMEMORY_COMPACT_PROVIDER", DEFAULT_LLM_PROVIDER)
-COMPACT_STATUS_OK = "ok"
-COMPACT_STATUS_FAILED = "failed"
-COMPACT_STATUS_SKIPPED_SHORT = "skipped_short"
-COMPACT_STATUS_TOO_LONG = "too_long"
 JOB_TYPE_STRUCTURED_EXTRACT = "structured_extract"
 JOB_TYPE_COMPACT = "compact"
 JOB_STATUS_PENDING = "pending"
@@ -219,12 +218,6 @@ JOB_STATUS_RUNNING = "running"
 JOB_STATUS_DONE = "done"
 JOB_STATUS_FAILED = "failed"
 
-HEADER_RE = re.compile(r"^#{1,3}\s+(.+)$", re.MULTILINE)
-FENCED_BLOCK_RE = re.compile(
-    r"```(?P<lang>[a-zA-Z0-9_-]*)\n(?P<body>.*?)(?:\n)?```",
-    re.DOTALL,
-)
-TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
 PATH_TOKEN_RE = re.compile(
     r"(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|/)[^\s`\"'()\[\]]{1,180}\.[A-Za-z0-9_]{1,16}"
 )
@@ -249,910 +242,15 @@ INFORMATIVE_STOPWORDS = {
     "how", "i", "in", "is", "it", "of", "on", "or", "so", "the", "this",
     "to", "we", "what", "when", "why", "with", "you",
 }
-MISSING_CTX_PHRASES = [
-    "as we said", "earlier", "we decided", "you mentioned", "what did we",
-    "continue", "the thing we", "remind me", "what was",
-]
-
-
 # ── Importance scoring ────────────────────────────────────────────────────────
-
-def score_importance(text: str) -> float:
-    """Compatibility hook for old callers; raw chunk retention is score-based."""
-    return 0.5
-
 
 # ── Data classes ──────────────────────────────────────────────────────────────
 
-@dataclass
-class Chunk:
-    id: str
-    text: str
-    message_id: int
-    role: str
-    importance: float = 0.5
-
-
-@dataclass
-class RetrievedChunk:
-    id: str
-    text: str
-    importance: float
-    message_id: int
-    score: float = 0.0
-    decay_strength: float = 1.0
-    rrf_score: float = 0.0
-    source: str = "raw_chunk"
-
-
-@dataclass
-class MemoryMetadata:
-    message_id: int
-    memory_type: str
-    created_at: str
-    last_accessed_at: str
-    access_count: int
-    base_importance: float
-    half_life_days: float
-    pinned: bool
-    superseded_by: str | None
-    tombstoned_at: str | None
-
-
-@dataclass
-class SearchResult:
-    item_id: str
-    item_type: str
-    text: str
-    score: float
-    message_id: int | None
-    source: str
-    metadata: dict
-
-
-@dataclass
-class MessageRecord:
-    role: str
-    text: str
-    message_id: int
-    content_hash: str
-    created_at: str | None = None
-
-
-@dataclass
-class LedgerEntry:
-    chunk_id: str
-    text: str
-    importance: float
-    message_id: int
-    reason: str = "budget"
-
-
-@dataclass
-class StructuredMemoryObject:
-    id: str
-    type: str
-    summary: str
-    source_text: str
-    tags: list[str]
-    importance: float
-    message_id: int
-    role: str
-    content_hash: str | None = None
-
-
-@dataclass
-class AddMessageResult:
-    saved: bool
-    deduped: bool
-    message_id: int | None
-    content_hash: str
-    chunk_ids: list[str]
-    structured_object_ids: list[str]
-    queued_job_ids: list[str]
-
-
-@dataclass
-class LLMProviderOptions:
-    provider: str = DEFAULT_LLM_PROVIDER
-    api_key: str | None = None
-    base_url: str = DEFAULT_NVIDIA_BASE_URL
-    model: str = STRUCTURED_MEMORY_MODEL
-    api_style: str = LLM_API_STYLE_OPENAI_CHAT
-    extra_body: dict | None = None
-
-    @classmethod
-    def from_env(cls, provider: str, fallback_model: str) -> "LLMProviderOptions":
-        provider = (provider or DEFAULT_LLM_PROVIDER).strip().lower()
-        prefix = _provider_env_prefix(provider)
-        api_key = os.environ.get(f"{prefix}_API_KEY")
-        base_url = os.environ.get(f"{prefix}_BASE_URL")
-        model = os.environ.get(f"{prefix}_MODEL")
-        api_style = os.environ.get(f"{prefix}_API_STYLE", LLM_API_STYLE_OPENAI_CHAT)
-        thinking = os.environ.get(f"{prefix}_THINKING", "").strip().lower()
-
-        if provider == "nvidia":
-            api_key = api_key or os.environ.get(NVIDIA_API_KEY_ENV)
-            base_url = base_url or DEFAULT_NVIDIA_BASE_URL
-            model = model or fallback_model
-        elif provider == "opencode_go":
-            base_url = base_url or DEFAULT_OPENCODE_GO_BASE_URL
-            model = model or DEFAULT_OPENCODE_GO_MODEL
-        else:
-            base_url = base_url or ""
-            model = model or fallback_model
-
-        return cls(
-            provider=provider,
-            api_key=api_key.strip() if api_key else None,
-            base_url=base_url.rstrip("/"),
-            model=model.strip(),
-            api_style=api_style.strip().lower(),
-            extra_body=cls._extra_body_for(provider, thinking),
-        )
-
-    @staticmethod
-    def _extra_body_for(provider: str, thinking: str) -> dict | None:
-        if provider != "opencode_go" or not thinking:
-            return None
-        if thinking == "disabled":
-            return {"thinking": {"type": "disabled"}}
-        if thinking == "enabled":
-            return {"thinking": {"type": "enabled"}}
-        return None
-
-
-@dataclass
-class StructuredExtractionOptions:
-    max_chars: int = DEFAULT_STRUCTURED_MAX_CHARS
-    max_tokens: int = DEFAULT_STRUCTURED_MAX_TOKENS
-
-    @classmethod
-    def from_env(cls) -> "StructuredExtractionOptions":
-        return cls(
-            max_chars=max(1, _env_int("RAGMEMORY_STRUCTURED_MAX_CHARS", DEFAULT_STRUCTURED_MAX_CHARS)),
-            max_tokens=max(1, _env_int("RAGMEMORY_STRUCTURED_MAX_TOKENS", DEFAULT_STRUCTURED_MAX_TOKENS)),
-        )
-
-
-class LLMProviderClient:
-    def __init__(self, options: LLMProviderOptions):
-        self.options = options
-        self.client = None
-        self.last_error: str | None = None
-
-    def _client(self):
-        if self.client:
-            return self.client
-        if not self.options.api_key:
-            self.last_error = f"{self.options.provider} API key missing"
-            return None
-        if not self.options.base_url:
-            self.last_error = f"{self.options.provider} base_url missing"
-            return None
-        from openai import OpenAI
-
-        self.client = OpenAI(
-            base_url=self.options.base_url,
-            api_key=self.options.api_key,
-        )
-        return self.client
-
-    def complete_chat(
-        self,
-        messages: list[dict[str, str]],
-        max_tokens: int,
-        temperature: float = 0,
-    ) -> str | None:
-        self.last_error = None
-        if self.options.api_style != LLM_API_STYLE_OPENAI_CHAT:
-            self.last_error = f"unsupported api_style: {self.options.api_style}"
-            return None
-        client = self._client()
-        if client is None:
-            return None
-        try:
-            response = client.chat.completions.create(
-                model=self.options.model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                extra_body=self.options.extra_body,
-            )
-        except Exception as exc:
-            self.last_error = str(exc)
-            return None
-        return (response.choices[0].message.content or "").strip()
-
-
-@dataclass
-class MessageCompactionOptions:
-    enabled: bool = False
-    provider: str = DEFAULT_COMPACT_PROVIDER
-    model: str = DEFAULT_COMPACT_MODEL
-    min_chars: int = DEFAULT_COMPACT_MIN_CHARS
-    max_chars: int = DEFAULT_COMPACT_MAX_CHARS
-    max_tokens: int = DEFAULT_COMPACT_MAX_TOKENS
-    target_ratio: float = DEFAULT_COMPACT_TARGET_RATIO
-    mode: str = DEFAULT_COMPACT_MODE
-
-    @classmethod
-    def from_env(cls) -> "MessageCompactionOptions":
-        mode = os.environ.get("RAGMEMORY_COMPACT_MODE", DEFAULT_COMPACT_MODE).strip().lower()
-        if mode not in {"background", "inline"}:
-            mode = DEFAULT_COMPACT_MODE
-        return cls(
-            enabled=_env_bool("RAGMEMORY_COMPACT_ENABLE", False),
-            provider=os.environ.get("RAGMEMORY_COMPACT_PROVIDER", DEFAULT_COMPACT_PROVIDER).strip().lower(),
-            model=os.environ.get("RAGMEMORY_COMPACT_MODEL", DEFAULT_COMPACT_MODEL).strip(),
-            min_chars=max(0, _env_int("RAGMEMORY_COMPACT_MIN_CHARS", DEFAULT_COMPACT_MIN_CHARS)),
-            max_chars=max(0, _env_int("RAGMEMORY_COMPACT_MAX_CHARS", DEFAULT_COMPACT_MAX_CHARS)),
-            max_tokens=max(1, _env_int("RAGMEMORY_COMPACT_MAX_TOKENS", DEFAULT_COMPACT_MAX_TOKENS)),
-            target_ratio=max(
-                0.05,
-                min(_env_float("RAGMEMORY_COMPACT_TARGET_RATIO", DEFAULT_COMPACT_TARGET_RATIO), 1.0),
-            ),
-            mode=mode,
-        )
-
-
-@dataclass
-class MessageCompactionJob:
-    job_id: str
-    role: str
-    text: str
-    message_id: int
-
-
-@dataclass
-class EvidenceReference:
-    ref_type: str
-    content_hash: str
-    source_text: str
-    preview: str
-
-    @property
-    def marker(self) -> str:
-        return f"evidence[{self.ref_type}:{self.content_hash}]"
-
-
-@dataclass
-class BackgroundJob:
-    job_id: str
-    job_type: str
-    message_id: int
-    attempts: int
-
-
-@dataclass
-class ForgetPreview:
-    messages: list[MessageRecord]
-    chunks: list[RetrievedChunk]
-    structured: list[StructuredMemoryObject]
-    ledger_entries: list[LedgerEntry]
-    message_count: int
-    chunk_count: int
-    structured_count: int
-    ledger_count: int
-    truncated: bool
-
-
-@dataclass
-class ForgetResult(ForgetPreview):
-    tombstoned_count: int
-    event_id: str
-
-
-@dataclass
-class ContextBundle:
-    query: str
-    recent: list[MessageRecord]
-    structured: list[StructuredMemoryObject]
-    retrieved: list[RetrievedChunk]
-    ledger_recovered: list[RetrievedChunk]
-    kept: list[RetrievedChunk]
-    would_be_dropped: list[RetrievedChunk]
-    token_budget: int
-    tokens_used: int
-
-
-@dataclass
-class RecallOptions:
-    retrieve_top_k: int | None = None
-    structured_top_k: int | None = None
-    context_token_budget: int | None = None
-    recent_messages: int | None = None
-    include_recent: bool = True
-    include_structured: bool = True
-
-
-def format_for_prompt(bundle: ContextBundle) -> str:
-    parts = []
-    if bundle.structured:
-        parts.append("=== Structured Memory ===\n" + "\n---\n".join(
-            _format_structured_object(obj) for obj in bundle.structured
-        ))
-    seen_texts: set[str] = set()
-    if bundle.kept:
-        relevant_texts = []
-        for chunk in bundle.kept:
-            text = _clean_prompt_memory_text(chunk.text)
-            if not _should_include_prompt_memory_text(text):
-                continue
-            key = _dedupe_prompt_memory_key(text)
-            if key in seen_texts:
-                continue
-            seen_texts.add(key)
-            relevant_texts.append(text)
-    else:
-        relevant_texts = []
-    if relevant_texts:
-        parts.append("=== Relevant Memory ===\n" + "\n---\n".join(
-            relevant_texts
-        ))
-    if bundle.recent:
-        recent_lines = []
-        for message in bundle.recent:
-            text = _clean_prompt_memory_text(message.text)
-            if not _should_include_prompt_memory_text(text):
-                continue
-            key = _dedupe_prompt_memory_key(text)
-            if key in seen_texts:
-                continue
-            seen_texts.add(key)
-            recent_lines.append(f"{message.role.upper()}: {text}")
-        if recent_lines:
-            parts.append("=== Recent Conversation ===\n" + "\n".join(recent_lines))
-    return "\n\n".join(parts)
-
-
-def _clean_prompt_memory_text(text: str) -> str:
-    cleaned = text.replace("\r\n", "\n").strip()
-    cleaned = re.sub(
-        r"(?is)# Context from my IDE setup:\s*.*?## My request for Codex:\s*",
-        "",
-        cleaned,
-    )
-    cleaned = re.sub(r"(?im)^## Active file:.*(?:\n|$)", "", cleaned)
-    cleaned = re.sub(r"(?ims)^## Open tabs:\s*(?:\n- .*)+", "", cleaned)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    return cleaned.strip()
-
-
-def _should_include_prompt_memory_text(text: str) -> bool:
-    normalized = _dedupe_prompt_memory_key(text)
-    if not normalized:
-        return False
-    low_value = {
-        "btw",
-        "ok",
-        "wait let me ask claude",
-        "let me ask claude",
-    }
-    return normalized not in low_value
-
-
-def _dedupe_prompt_memory_key(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip().lower()
-
-
-def _format_structured_object(obj: StructuredMemoryObject) -> str:
-    tags = ", ".join(obj.tags)
-    return (
-        f"[{obj.type} | importance={obj.importance} | message_id={obj.message_id}]\n"
-        f"Summary: {obj.summary}\n"
-        f"Tags: {tags}\n"
-        f"Source: {obj.source_text}"
-    )
-
-
 # ── BM25 index ────────────────────────────────────────────────────────────────
-
-class BM25Index:
-    def __init__(self):
-        self._ids: list[str] = []
-        self._tokenized: list[list[str]] = []
-        self._bm25: BM25Okapi | None = None
-        self._dirty = False
-
-    def build(self, ids: list[str], texts: list[str]):
-        self._ids = list(ids)
-        self._tokenized = [text.lower().split() for text in texts]
-        self._bm25 = BM25Okapi(self._tokenized) if self._tokenized else None
-        self._dirty = False
-
-    def add(self, doc_id: str, text: str):
-        self._ids.append(doc_id)
-        self._tokenized.append(text.lower().split())
-        self._dirty = True
-
-    def clear(self):
-        self._ids = []
-        self._tokenized = []
-        self._bm25 = None
-        self._dirty = False
-
-    def search(self, query: str, top_k: int) -> list[str]:
-        if not self._ids or top_k <= 0:
-            return []
-        if self._dirty or self._bm25 is None:
-            self._bm25 = BM25Okapi(self._tokenized)
-            self._dirty = False
-        scores = self._bm25.get_scores(query.lower().split())
-        ranked = sorted(range(len(scores)), key=lambda i: -scores[i])
-        return [self._ids[i] for i in ranked[:top_k] if scores[i] > 0]
-
-    def __len__(self):
-        return len(self._ids)
-
 
 # ── Removal ledger ────────────────────────────────────────────────────────────
 
-class RemovalLedger:
-    def __init__(self, path: Path):
-        self._path = path
-        self.entries: list[LedgerEntry] = []
-        self._load()
-
-    def _load(self):
-        if self._path.exists():
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-            self.entries = [
-                LedgerEntry(
-                    chunk_id=e["chunk_id"],
-                    text=e["text"],
-                    importance=e["importance"],
-                    message_id=e.get("message_id", e.get("turn_id", 0)),
-                    reason=e.get("reason", "budget"),
-                )
-                for e in data
-            ]
-
-    def _save(self):
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps([e.__dict__ for e in self.entries], ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-    def log(self, chunk: RetrievedChunk, reason: str = "budget"):
-        self.entries.append(
-            LedgerEntry(chunk.id, chunk.text, chunk.importance, chunk.message_id, reason)
-        )
-        self._save()
-        print(f"  [ledger +1] importance={chunk.importance} | {chunk.text[:60]}...")
-
-    def search(self, query: str, top_k: int = 3) -> list[LedgerEntry]:
-        query_words = set(query.lower().split())
-        scored = []
-        for entry in self.entries:
-            overlap = len(query_words & set(entry.text.lower().split()))
-            if overlap > 0:
-                scored.append((overlap + entry.importance, entry))
-        scored.sort(key=lambda x: -x[0])
-        return [e for _, e in scored[:top_k]]
-
-    def looks_like_missing_context(self, query: str) -> bool:
-        return any(phrase in query.lower() for phrase in MISSING_CTX_PHRASES)
-
-    def __len__(self):
-        return len(self.entries)
-
-
 # ── Chunker ───────────────────────────────────────────────────────────────────
-
-class ExactArtifactExtractor:
-    CONFIG_LANGS = {"json", "toml", "yaml", "yml", "ini", "env", "xml"}
-
-    def extract(self, role: str, text: str, message_id: int) -> list[StructuredMemoryObject]:
-        objects = self._extract_fenced_blocks(role, text, message_id)
-        objects.extend(self._extract_markdown_tables(role, text, message_id))
-        return objects
-
-    def _extract_fenced_blocks(
-        self, role: str, text: str, message_id: int
-    ) -> list[StructuredMemoryObject]:
-        objects = []
-        for match in FENCED_BLOCK_RE.finditer(text):
-            source_text = match.group(0)
-            lang = match.group("lang").lower()
-            obj_type = self._type_for_fenced_lang(lang)
-            objects.append(StructuredMemoryObject(
-                id=f"sm_{uuid.uuid4()}",
-                type=obj_type,
-                summary=self._summary_for_artifact(obj_type, lang),
-                source_text=source_text,
-                tags=[tag for tag in [lang, obj_type] if tag],
-                importance=0.85,
-                message_id=message_id,
-                role=role,
-                content_hash=evidence_content_hash(source_text, lang or obj_type),
-            ))
-        return objects
-
-    def _extract_markdown_tables(
-        self, role: str, text: str, message_id: int
-    ) -> list[StructuredMemoryObject]:
-        lines = text.splitlines()
-        objects = []
-        i = 0
-        while i < len(lines) - 1:
-            if "|" not in lines[i] or not TABLE_SEPARATOR_RE.match(lines[i + 1]):
-                i += 1
-                continue
-            start = i
-            i += 2
-            while i < len(lines) and "|" in lines[i].strip():
-                i += 1
-            source_text = "\n".join(lines[start:i])
-            objects.append(StructuredMemoryObject(
-                id=f"sm_{uuid.uuid4()}",
-                type="table",
-                summary="Exact Markdown table",
-                source_text=source_text,
-                tags=["markdown", "table"],
-                importance=0.85,
-                message_id=message_id,
-                role=role,
-                content_hash=evidence_content_hash(source_text, "table"),
-            ))
-        return objects
-
-    def _type_for_fenced_lang(self, lang: str) -> str:
-        if lang in self.CONFIG_LANGS:
-            return "config"
-        if lang == "mermaid":
-            return "chart"
-        return "code_reference"
-
-    def _summary_for_artifact(self, obj_type: str, lang: str) -> str:
-        if obj_type == "config":
-            return f"Exact {lang or 'config'} config block"
-        if obj_type == "chart":
-            return "Exact Mermaid chart block"
-        return f"Exact {lang or 'code'} block"
-
-
-class StructuredMemoryExtractor:
-    def __init__(
-        self,
-        options: LLMProviderOptions | None = None,
-        extraction_options: StructuredExtractionOptions | None = None,
-    ):
-        provider = os.environ.get("RAGMEMORY_STRUCTURED_PROVIDER", DEFAULT_LLM_PROVIDER)
-        self.llm = LLMProviderClient(
-            options or LLMProviderOptions.from_env(provider, STRUCTURED_MEMORY_MODEL)
-        )
-        self.options = extraction_options or StructuredExtractionOptions.from_env()
-
-    def extract(self, role: str, text: str, message_id: int) -> list[StructuredMemoryObject]:
-        if not text.strip():
-            return []
-        if not self.llm.options.api_key:
-            return []
-
-        prompt = self._build_prompt(role, text)
-        content = self.llm.complete_chat(
-            messages=[
-                {"role": "system", "content": "Extract only durable memory objects. Return strict JSON only."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0,
-            max_tokens=self.options.max_tokens,
-        )
-        if content is None:
-            print(
-                f"  [structured skipped] {self.llm.options.provider} extraction failed: "
-                f"{self.llm.last_error}"
-            )
-            return []
-
-        data = self._parse_json(content)
-        objects = data.get("objects", []) if isinstance(data, dict) else []
-        return [obj for item in objects if (obj := self._coerce_object(item, role, message_id))]
-
-    def _build_prompt(self, role: str, text: str) -> str:
-        return f"""Role: {role}
-
-Allowed types:
-- decision
-- preference
-- constraint
-- config
-- table
-- code_reference
-- chart
-- open_question
-
-Extract only information that should be remembered across sessions.
-Exact fenced code/config/chart blocks and Markdown tables are extracted by code before this step.
-Only return config/table/code_reference/chart if there is a durable artifact that was not already obvious as a fenced block or Markdown table.
-If nothing durable exists, return {{"objects": []}}.
-
-Tag rules:
-- Tags must be concrete subject labels: project names, feature names, product/tool names, repo/module names, or durable workflow concepts.
-- Prefer 1-4 specific tags per object.
-- Do not copy the object type into tags.
-- Do not use generic artifact/meta/language tags such as code_reference, config, decision, preference, table, chart, text, profile, python, powershell, json, yaml, markdown, important, context, memory, note.
-- Good examples: ragmemory, obsidian-export, codex-hooks, memory-decay, topic-filtering.
-
-Return JSON in this exact shape:
-{{
-  "objects": [
-    {{
-      "type": "decision",
-      "summary": "short durable memory",
-      "source_text": "exact supporting text",
-      "tags": ["short", "lowercase", "tags"],
-      "importance": 0.8
-    }}
-  ]
-}}
-
-Message:
-{text[:self.options.max_chars]}
-"""
-
-    def _parse_json(self, content: str) -> dict:
-        stripped = content.strip()
-        if stripped.startswith("```"):
-            stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
-            stripped = re.sub(r"\s*```$", "", stripped)
-        try:
-            return json.loads(stripped)
-        except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", stripped, re.DOTALL)
-            if not match:
-                return {}
-            try:
-                return json.loads(match.group(0))
-            except json.JSONDecodeError:
-                return {}
-
-    def _coerce_object(
-        self, item: object, role: str, message_id: int
-    ) -> StructuredMemoryObject | None:
-        if not isinstance(item, dict):
-            return None
-        obj_type = str(item.get("type", "")).strip().lower()
-        if obj_type not in STRUCTURED_TYPES:
-            return None
-        summary = str(item.get("summary", "")).strip()
-        source_text = str(item.get("source_text", "")).strip()
-        if not summary or not source_text:
-            return None
-        raw_tags = item.get("tags", [])
-        tags = [str(tag).strip().lower() for tag in raw_tags if str(tag).strip()]
-        try:
-            importance = float(item.get("importance", 0.7))
-        except (TypeError, ValueError):
-            importance = 0.7
-        importance = round(max(0.0, min(importance, 1.0)), 3)
-        content_hash = str(item.get("content_hash", "")).strip() or None
-        return StructuredMemoryObject(
-            id=f"sm_{uuid.uuid4()}",
-            type=obj_type,
-            summary=summary,
-            source_text=source_text,
-            tags=tags[:8],
-            importance=importance,
-            message_id=message_id,
-            role=role,
-            content_hash=content_hash,
-        )
-
-
-class MessageCompactor:
-    def __init__(self, options: LLMProviderOptions, max_tokens: int = DEFAULT_COMPACT_MAX_TOKENS):
-        self.options = options
-        self.model = options.model
-        self.max_tokens = max_tokens
-        self.last_error: str | None = None
-        self.llm = LLMProviderClient(options)
-
-    def compact(
-        self,
-        role: str,
-        text: str,
-        target_ratio: float,
-        evidence_refs: list[EvidenceReference] | None = None,
-    ) -> str | None:
-        self.last_error = None
-        if not text.strip():
-            self.last_error = "empty message"
-            return None
-
-        compact_text = self.llm.complete_chat(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Compact noisy chat memory while preserving exact technical evidence.",
-                },
-                {
-                    "role": "user",
-                    "content": self._build_prompt(
-                        role,
-                        text,
-                        target_ratio,
-                        evidence_refs or [],
-                    ),
-                },
-            ],
-            temperature=0,
-            max_tokens=self.max_tokens,
-        )
-        if compact_text is None:
-            self.last_error = self.llm.last_error or "unknown compaction failure"
-            print(f"  [compact skipped] {self.options.provider} compaction failed: {self.last_error}")
-            return None
-
-        if not compact_text:
-            self.last_error = "empty compact text"
-            return None
-        return compact_text
-
-    def _build_prompt(
-        self,
-        role: str,
-        text: str,
-        target_ratio: float,
-        evidence_refs: list[EvidenceReference],
-    ) -> str:
-        ratio_percent = int(target_ratio * 100)
-        manifest = "\n".join(
-            f"- {ref.marker}: {ref.preview}"
-            for ref in evidence_refs
-        ) or "- none"
-        return f"""Role: {role}
-
-Compact this chat message for long-term memory storage.
-Target about {ratio_percent}% of the original length, but preserve important details over hitting the ratio.
-
-Preserve verbatim:
-- File paths, identifiers, URLs, config keys, and backticked tokens.
-- Full error messages, exception names, tracebacks, and command output that explains a failure.
-- Shell commands and flags.
-- User preferences, decisions, constraints, and requested workflow rules.
-- Numbers, dates, versions, ports, IDs, and model names.
-
-Evidence references:
-- For long fenced code/config/table blocks, you may use only the references listed below instead of repeating the full block.
-- Do not invent references.
-- Do not use references for inline file paths, URLs, errors, or commands; write those verbatim.
-
-Available references:
-{manifest}
-
-Drop:
-- Repeated IDE context blocks.
-- Tool call boilerplate and "I am reading/checking" filler.
-- Duplicated stack traces or logs after the first useful lines.
-- Conversation filler that does not change future behavior.
-
-Return compact text only. Do not wrap it in JSON or Markdown fences.
-
-Message:
-{text[:12000]}
-"""
-
-
-class StructuredMemoryStore:
-    def __init__(self, path: Path, collection):
-        self._path = path
-        self.collection = collection
-        self.objects: dict[str, StructuredMemoryObject] = {}
-        self._load()
-
-    def _load(self):
-        if not self._path.exists():
-            return
-        for line in self._path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            data = json.loads(line)
-            obj = StructuredMemoryObject(**data)
-            self.objects[obj.id] = obj
-
-    def add_many(self, objects: list[StructuredMemoryObject]):
-        if not objects:
-            return
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open("a", encoding="utf-8") as f:
-            for obj in objects:
-                self.objects[obj.id] = obj
-                f.write(json.dumps(obj.__dict__, ensure_ascii=False) + "\n")
-        self.collection.add(
-            ids=[obj.id for obj in objects],
-            documents=[self._document_text(obj) for obj in objects],
-            metadatas=[
-                {
-                    "type": obj.type,
-                    "message_id": obj.message_id,
-                    "role": obj.role,
-                    "importance": obj.importance,
-                    "tags": ",".join(obj.tags),
-                }
-                for obj in objects
-            ],
-        )
-
-    def search(self, query: str, top_k: int = STRUCTURED_TOP_K) -> list[StructuredMemoryObject]:
-        if self.collection.count() == 0:
-            return []
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=min(top_k, self.collection.count()),
-            include=["metadatas"],
-        )
-        found = []
-        for obj_id in results["ids"][0]:
-            obj = self.objects.get(obj_id)
-            if obj:
-                found.append(obj)
-        return found
-
-    def _document_text(self, obj: StructuredMemoryObject) -> str:
-        return (
-            f"Type: {obj.type}\n"
-            f"Summary: {obj.summary}\n"
-            f"Tags: {', '.join(obj.tags)}\n"
-            f"Source: {obj.source_text}"
-        )
-
-    def __len__(self):
-        return len(self.objects)
-
-
-class Chunker:
-    def split(self, text: str, message_id: int, role: str) -> list[Chunk]:
-        paragraphs = self._split_with_headers(text)
-        raw = []
-        for para, header in paragraphs:
-            injected = f"[{header}] {para}" if header else para
-            if len(injected) / 4 > CHUNK_MAX_TOKENS:
-                raw.extend(self._split_sentences(injected, message_id, role))
-            else:
-                raw.append(self._chunk(injected, message_id, role))
-
-        merged = []
-        for c in raw:
-            if merged and len(merged[-1].text) / 4 < CHUNK_MIN_TOKENS:
-                merged[-1].text += " " + c.text
-                merged[-1].importance = score_importance(merged[-1].text)
-            else:
-                c.importance = score_importance(c.text)
-                merged.append(c)
-        return merged
-
-    def _split_with_headers(self, text: str) -> list[tuple[str, str | None]]:
-        paragraphs = [p.strip() for p in re.split(r"\n\n+", text) if p.strip()]
-        result, current_header = [], None
-        for para in paragraphs:
-            m = HEADER_RE.match(para)
-            if m:
-                current_header = m.group(1).strip()
-                result.append((para, None))
-            else:
-                result.append((para, current_header))
-        return result
-
-    def _split_sentences(self, text: str, message_id: int, role: str) -> list[Chunk]:
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        chunks, current = [], ""
-        for sent in sentences:
-            candidate = (current + " " + sent).strip()
-            if len(candidate) / 4 > CHUNK_MAX_TOKENS and current:
-                chunks.append(self._chunk(current, message_id, role))
-                current = sent
-            else:
-                current = candidate
-        if current:
-            chunks.append(self._chunk(current, message_id, role))
-        return chunks
-
-    def _chunk(self, text: str, message_id: int, role: str) -> Chunk:
-        return Chunk(id=str(uuid.uuid4()), text=text, message_id=message_id, role=role)
-
 
 # ── Memory store ──────────────────────────────────────────────────────────────
 
@@ -1164,14 +262,17 @@ class MemoryStore:
         self.state_file = self.db_path / "state.json"
         self.events_file = self.db_path / "events.jsonl"
 
-        print("Loading embedding model...")
-        self.embed_fn = DefaultEmbeddingFunction()
+        self.embedding_options = EmbeddingOptions.from_env()
+        print(f"Loading embedding model ({self.embedding_options.label})...")
+        self.embed_fn = build_embedding_function(self.embedding_options)
         self.client = chromadb.PersistentClient(path=str(self.db_path))
         self.collection = self.client.get_or_create_collection(
-            "chat_memory", embedding_function=self.embed_fn
+            self.embedding_options.collection_name("chat_memory"),
+            embedding_function=self.embed_fn,
         )
         self.structured_collection = self.client.get_or_create_collection(
-            "structured_memory", embedding_function=self.embed_fn
+            self.embedding_options.collection_name("structured_memory"),
+            embedding_function=self.embed_fn,
         )
         self.chunker = Chunker()
         self.ledger = RemovalLedger(self.db_path / "ledger.json")
@@ -1213,6 +314,7 @@ class MemoryStore:
         recent_messages: int | None = None,
         include_recent: bool = True,
         include_structured: bool = True,
+        recent_token_budget_ratio: float | None = None,
     ) -> None:
         self._recall_options = RecallOptions(
             retrieve_top_k=max(0, retrieve_top_k) if retrieve_top_k is not None else None,
@@ -1224,6 +326,10 @@ class MemoryStore:
             recent_messages=max(0, recent_messages) if recent_messages is not None else None,
             include_recent=include_recent,
             include_structured=include_structured,
+            recent_token_budget_ratio=(
+                min(1.0, max(0.0, recent_token_budget_ratio))
+                if recent_token_budget_ratio is not None else None
+            ),
         )
 
     # ── Persistence ───────────────────────────────────────────────────────────
@@ -1648,6 +754,36 @@ class MemoryStore:
                 (status, last_error, self._now_iso(), job_id),
             )
 
+    def _record_direct_compaction_job(
+        self,
+        job_id: str,
+        message_id: int,
+        status: str,
+        last_error: str | None = None,
+    ) -> None:
+        if status not in {JOB_STATUS_DONE, JOB_STATUS_FAILED}:
+            raise ValueError(f"invalid terminal job status: {status}")
+        now = self._now_iso()
+        with sqlite3.connect(self.state_db) as conn:
+            conn.execute(
+                """
+                INSERT INTO jobs(
+                    job_id, job_type, message_id, status, attempts,
+                    last_error, created_at, started_at, finished_at
+                ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    JOB_TYPE_COMPACT,
+                    message_id,
+                    status,
+                    last_error,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+
     def reset_running_jobs(self) -> int:
         with sqlite3.connect(self.state_db) as conn:
             cursor = conn.execute(
@@ -1857,6 +993,14 @@ class MemoryStore:
             compact_message_ids=compact_message_ids,
         )
         return chunk_count
+
+    def rebuild_structured_memory_index(self) -> int:
+        object_count = self.structured.rebuild_index()
+        self._log_event(
+            "structured_memory_index_rebuilt",
+            object_count=object_count,
+        )
+        return object_count
 
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -2106,6 +1250,31 @@ class MemoryStore:
         ]
         return missing_critical, missing_informative
 
+    def _repair_compact_text_missing_evidence(
+        self,
+        raw_text: str,
+        compact_text: str,
+        missing_critical: list[str],
+    ) -> str | None:
+        repair_lines = []
+        ref_by_source = {
+            ref.source_text: ref
+            for ref in self._block_evidence_references(raw_text)
+        }
+        for token in missing_critical:
+            if token.startswith("invalid evidence ref:"):
+                return None
+            ref = ref_by_source.get(token)
+            if ref:
+                repair_lines.append(f"- {ref.marker}: {ref.preview}")
+            else:
+                repair_lines.append(f"- {token}")
+        if not repair_lines:
+            return compact_text
+        repaired = compact_text.rstrip()
+        repaired += "\n\nRequired evidence from raw:\n" + "\n".join(repair_lines)
+        return repaired
+
     def _run_compaction_job(self, job: MessageCompactionJob) -> int | None:
         if self._is_message_tombstoned(job.message_id):
             self._log_event(
@@ -2173,6 +1342,30 @@ class MemoryStore:
             return None
 
         missing_critical, missing_informative = self._missing_compaction_tokens(job.text, compact_text)
+        if missing_critical:
+            repaired_text = self._repair_compact_text_missing_evidence(
+                job.text,
+                compact_text,
+                missing_critical,
+            )
+            if repaired_text is not None:
+                repaired_missing_critical, repaired_missing_informative = (
+                    self._missing_compaction_tokens(job.text, repaired_text)
+                )
+                if not repaired_missing_critical:
+                    self._log_event(
+                        "message_compaction_repaired",
+                        job_id=job.job_id,
+                        message_id=job.message_id,
+                        repaired_tokens=missing_critical[:20],
+                        repaired_count=len(missing_critical),
+                    )
+                    compact_text = repaired_text
+                    missing_informative = sorted(
+                        set(missing_informative) | set(repaired_missing_informative)
+                    )
+                    missing_critical = []
+
         if missing_critical:
             self._set_message_compaction(
                 job.message_id,
@@ -2523,23 +1716,56 @@ class MemoryStore:
             compacted_message_ids.extend(int(item) for item in message_ids)
         return compacted_message_ids
 
-    def compact_existing_messages(self, limit: int | None = None) -> list[int]:
+    def compact_existing_messages(
+        self,
+        limit: int | None = None,
+        max_attempts: int | None = None,
+        progress_callback=None,
+    ) -> list[int]:
         self.last_compact_backfill_attempts = []
         if not self.compaction_options.enabled:
             return []
         query = """
-            SELECT message_id, role, text
-            FROM messages
-            WHERE compact_text IS NULL
-              AND (compact_status IS NULL OR compact_status = ?)
-              AND tombstoned = 0
-              AND length(text) >= ?
-            ORDER BY message_id
+            SELECT m.message_id, m.role, m.text
+            FROM messages m
+            WHERE m.compact_text IS NULL
+              AND m.tombstoned = 0
+              AND length(m.text) >= ?
+              AND (
+                m.compact_status IS NULL
+                OR m.compact_status = ?
+                OR (
+                  m.compact_status = ?
+                  AND length(m.text) >= ?
+                )
+                OR (
+                  m.compact_status = ?
+                  AND (? = 0 OR length(m.text) <= ?)
+                )
+              )
         """
         params: list[object] = [
-            COMPACT_STATUS_FAILED,
             self.compaction_options.min_chars,
+            COMPACT_STATUS_FAILED,
+            COMPACT_STATUS_SKIPPED_SHORT,
+            self.compaction_options.min_chars,
+            COMPACT_STATUS_TOO_LONG,
+            self.compaction_options.max_chars,
+            self.compaction_options.max_chars,
         ]
+        if max_attempts is not None:
+            query += """
+              AND (
+                SELECT COALESCE(SUM(j.attempts), 0)
+                FROM jobs j
+                WHERE j.message_id = m.message_id
+                  AND j.job_type = ?
+              ) < ?
+            """
+            params.extend([JOB_TYPE_COMPACT, max_attempts])
+        query += """
+            ORDER BY m.message_id
+        """
         if limit is not None:
             if limit <= 0:
                 return []
@@ -2550,24 +1776,33 @@ class MemoryStore:
             rows = conn.execute(query, params).fetchall()
 
         compacted_message_ids = []
-        for message_id, role, text in rows:
+        total_rows = len(rows)
+        for index, (message_id, role, text) in enumerate(rows, start=1):
             before_events = self.events_file.stat().st_size if self.events_file.exists() else 0
+            job_id = f"compact_{uuid.uuid4()}"
             job = MessageCompactionJob(
-                job_id=f"compact_{uuid.uuid4()}",
+                job_id=job_id,
                 role=role,
                 text=text,
                 message_id=message_id,
             )
             result = self._run_compaction_job(job)
-            self.last_compact_backfill_attempts.append(
-                self._compact_attempt_summary(
-                    message_id,
-                    before_events,
-                    result is not None,
-                )
+            summary = self._compact_attempt_summary(
+                message_id,
+                before_events,
+                result is not None,
+            )
+            self.last_compact_backfill_attempts.append(summary)
+            self._record_direct_compaction_job(
+                job_id,
+                message_id,
+                JOB_STATUS_DONE if result is not None else JOB_STATUS_FAILED,
+                summary.get("reason") or None,
             )
             if result is not None:
                 compacted_message_ids.append(result)
+            if progress_callback is not None:
+                progress_callback(index, total_rows, summary)
         return compacted_message_ids
 
     def _compact_attempt_summary(self, message_id: int, event_offset: int, compacted: bool) -> dict:
@@ -2724,6 +1959,7 @@ class MemoryStore:
         if message_ids and before is not None:
             raise ValueError("forget accepts one selector at a time for now")
 
+        self._sync_message_state_from_db()
         selected_ids = self._select_forget_message_ids(message_ids, before)
         preview = self._build_forget_preview(selected_ids, sample_limit)
         if not confirm:
@@ -2920,6 +2156,24 @@ class MemoryStore:
                 if options.include_recent and recent_limit > 0 else []
             )
         ]
+
+        ratio = (
+            0.4 if options.recent_token_budget_ratio is None
+            else options.recent_token_budget_ratio
+        )
+        ratio = min(1.0, max(0.0, ratio))
+        recent_tokens_used = 0
+        if recent_limit > 0 and options.include_recent:
+            recent_budget = int(token_budget * ratio)
+            trimmed: list[MessageRecord] = []
+            if recent_budget > 0:
+                for msg in reversed(recent):
+                    tokens = self._estimate_tokens(msg.text)
+                    if recent_tokens_used + tokens > recent_budget:
+                        continue
+                    trimmed.append(msg)
+                    recent_tokens_used += tokens
+            recent = list(reversed(trimmed))
         recent_texts = {message.text for message in recent}
 
         structured = (
@@ -2948,7 +2202,7 @@ class MemoryStore:
                     break
             print(f"  [ledger recovery] searched archived chunks")
 
-        budget = token_budget
+        budget = token_budget - recent_tokens_used
         kept, would_be_dropped = [], []
         for chunk in sorted(retrieved + ledger_recovered, key=lambda c: (-c.score, -c.message_id)):
             tokens = self._estimate_tokens(chunk.text)
@@ -3018,3 +2272,12 @@ class MemoryStore:
             return False
         source = obj.source_text.strip()
         return any(source == exact or exact in source or source in exact for exact in exact_sources)
+
+
+from .prompt_format import (
+    format_for_prompt,
+    _clean_prompt_memory_text,
+    _should_include_prompt_memory_text,
+    _dedupe_prompt_memory_key,
+    _format_structured_object,
+)

@@ -55,6 +55,9 @@ base_url = https://integrate.api.nvidia.com/v1
 model = minimaxai/minimax-m2.7
 api_style = openai_chat
 
+[embedding]
+provider = chroma_default
+
 [compact]
 enable = true
 model = minimaxai/minimax-m2.7
@@ -98,6 +101,39 @@ uv run python scripts/test_llm_provider.py --provider opencode_go
 
 Only `openai_chat` providers are supported for now. OpenCode Go models that use
 `/messages` need a separate adapter later.
+
+### Optional: Better Local Embeddings
+
+RagMemory uses local embeddings for Chroma vector search, then combines those
+results with BM25 keyword search. The default is still Chroma's built-in
+embedding function because it is the easiest clean install.
+
+For better recall on a local Windows machine, try the small BGE model:
+
+```ini
+[embedding]
+provider = sentence_transformers
+model = BAAI/bge-small-en-v1.5
+device = cpu
+normalize_embeddings = true
+```
+
+Model tradeoffs:
+
+```text
+all-MiniLM-L6-v2        fastest and lightest
+BAAI/bge-small-en-v1.5  better recall, still CPU-friendly
+BAAI/bge-m3             better multilingual recall, too heavy for many CPUs
+```
+
+After changing the embedding model, rebuild both chat and structured indexes:
+
+```powershell
+uv run python scripts/rebuild_memory_index.py --db-path ./.data/chroma_db
+```
+
+RagMemory uses model-specific Chroma collection names for non-default embedding
+models, so old vectors are not mixed with new vectors.
 
 ## Use With Codex Hooks
 
@@ -325,6 +361,48 @@ After changing compaction behavior, rebuild the retrieval index:
 ```powershell
 uv run python scripts/rebuild_memory_index.py
 ```
+
+## Benchmark Retrieval
+
+Run the small tracked smoke benchmark:
+
+```powershell
+uv run python scripts/benchmark_retrieval.py
+```
+
+For a more realistic local benchmark, generate cases from your current
+structured memory. This writes under `.data/`, so private project details stay
+out of git:
+
+```powershell
+uv run python scripts/make_benchmark_cases.py --db-path ./.data/chroma_db --output ./.data/bench_retrieval/real_cases.json --limit 30
+```
+
+Compare embedding models against the same local cases:
+
+```powershell
+uv run python scripts/benchmark_retrieval.py --cases ./.data/bench_retrieval/real_cases.json --source-db ./.data/chroma_db --embedding-provider sentence_transformers --embedding-model BAAI/bge-small-en-v1.5 --bench-db ./.data/bench_retrieval/real_bge_small
+
+uv run python scripts/benchmark_retrieval.py --cases ./.data/bench_retrieval/real_cases.json --source-db ./.data/chroma_db --embedding-provider sentence_transformers --embedding-model all-MiniLM-L6-v2 --bench-db ./.data/bench_retrieval/real_minilm
+
+uv run python scripts/benchmark_retrieval.py --cases ./.data/bench_retrieval/real_cases.json --source-db ./.data/chroma_db --embedding-provider chroma_default --embedding-model='' --bench-db ./.data/bench_retrieval/real_chroma_default
+```
+
+The local benchmark reports `recall@5`, `recall@10`, MRR, rebuild time, and
+query latency. Treat generated cases as a starting point; hand-written
+paraphrase cases are still better for final model decisions.
+
+Latest local run on 30 generated real-memory cases:
+
+```text
+model                    recall@5  recall@10  MRR    p50 latency
+BAAI/bge-small-en-v1.5   96.7%     96.7%      0.894  85.9 ms
+all-MiniLM-L6-v2         90.0%     93.3%      0.818  62.8 ms
+chroma_default           90.0%     93.3%      0.818  582.3 ms
+```
+
+This result is machine- and corpus-specific. Re-run the benchmark after major
+memory, embedding, chunking, or retrieval changes.
 
 ## Technical Details
 

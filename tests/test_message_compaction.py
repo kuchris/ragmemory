@@ -14,6 +14,8 @@ from ragmemory import MemoryStore
 
 
 DB_PATH = Path("./.data/chroma_message_compaction_test")
+RETRY_DB_PATH = Path("./.data/chroma_message_retry_test")
+ELIGIBILITY_DB_PATH = Path("./.data/chroma_message_eligibility_test")
 EVENTS_PATH = DB_PATH / "events.jsonl"
 
 
@@ -40,8 +42,38 @@ def compact_columns(message_id: int) -> tuple:
         ).fetchone()
 
 
+def compact_columns_at(db_path: Path, message_id: int) -> tuple:
+    with sqlite3.connect(db_path / "state.sqlite") as conn:
+        return conn.execute(
+            """
+            SELECT text, compact_text, compact_status, compact_model
+            FROM messages
+            WHERE message_id = ?
+            """,
+            (message_id,),
+        ).fetchone()
+
+
+def compact_attempts_at(db_path: Path, message_id: int) -> int:
+    with sqlite3.connect(db_path / "state.sqlite") as conn:
+        value = conn.execute(
+            """
+            SELECT COALESCE(SUM(attempts), 0)
+            FROM jobs
+            WHERE job_type = 'compact'
+              AND message_id = ?
+            """,
+            (message_id,),
+        ).fetchone()[0]
+    return int(value)
+
+
 if DB_PATH.exists():
     shutil.rmtree(DB_PATH)
+if RETRY_DB_PATH.exists():
+    shutil.rmtree(RETRY_DB_PATH)
+if ELIGIBILITY_DB_PATH.exists():
+    shutil.rmtree(ELIGIBILITY_DB_PATH)
 
 store = MemoryStore(db_path=str(DB_PATH))
 store.compaction_options.enabled = True
@@ -194,10 +226,12 @@ assert status == "failed"
 
 store.compactor = FakeCompactor("Summary missing the required path.")
 missing = store.add_message("user", raw + "\nMissing evidence case", extract_structured=False)
-assert store.run_pending_compactions(limit=1) == []
+assert store.run_pending_compactions(limit=1) == [missing.message_id]
 _, compact_text, status, _ = compact_columns(missing.message_id)
-assert compact_text is None
-assert status == "failed"
+assert compact_text is not None
+assert "Required evidence from raw:" in compact_text
+assert "/c:/Users/alten/Desktop/ku/ragmemory/ragm_mcp/server.py" in compact_text
+assert status == "ok"
 
 events = [
     json.loads(line)
@@ -208,6 +242,7 @@ event_names = [event["event"] for event in events]
 assert "message_compaction_queued" in event_names
 assert "message_compacted" in event_names
 assert "message_compacted_with_warnings" in event_names
+assert "message_compaction_repaired" in event_names
 assert "message_compaction_failed" in event_names
 assert "message_compaction_skipped" in event_names
 
@@ -231,5 +266,96 @@ assert any(
     and "REBUILT_COMPACT_ONLY" in item.text
     for item in rebuilt_results
 )
+
+eligibility_store = MemoryStore(db_path=str(ELIGIBILITY_DB_PATH))
+eligibility_store.compaction_options.enabled = True
+eligibility_store.compaction_options.model = "fake-compact-model"
+eligibility_store.compaction_options.min_chars = 80
+eligibility_store.compaction_options.max_chars = 120
+eligibility_store.compaction_options.mode = "background"
+
+short_fake = FakeCompactor("should not be used")
+eligibility_store.compactor = short_fake
+short_retry = eligibility_store.add_message("user", "tiny", extract_structured=False)
+_, compact_text, status, _ = compact_columns_at(
+    ELIGIBILITY_DB_PATH,
+    short_retry.message_id,
+)
+assert compact_text is None
+assert status == "skipped_short"
+assert short_fake.calls == 0
+eligibility_store.compaction_options.min_chars = 3
+eligibility_store.compactor = FakeCompactor("tiny compact")
+assert eligibility_store.compact_existing_messages(limit=1) == [short_retry.message_id]
+_, compact_text, status, _ = compact_columns_at(
+    ELIGIBILITY_DB_PATH,
+    short_retry.message_id,
+)
+assert compact_text == "tiny compact"
+assert status == "ok"
+
+too_long_fake = FakeCompactor("should not be used")
+eligibility_store.compactor = too_long_fake
+eligibility_store.compaction_options.min_chars = 80
+eligibility_store.compaction_options.max_chars = 120
+too_long_retry = eligibility_store.add_message(
+    "user",
+    "too long message " * 20,
+    extract_structured=False,
+)
+assert eligibility_store.run_pending_compactions(limit=1) == []
+_, compact_text, status, _ = compact_columns_at(
+    ELIGIBILITY_DB_PATH,
+    too_long_retry.message_id,
+)
+assert compact_text is None
+assert status == "too_long"
+assert too_long_fake.calls == 0
+eligibility_store.compaction_options.max_chars = 10000
+eligibility_store.compactor = FakeCompactor("too long compact")
+progress_updates = []
+assert eligibility_store.compact_existing_messages(
+    limit=1,
+    progress_callback=lambda done, total, summary: progress_updates.append(
+        (done, total, summary["message_id"], summary["status"])
+    ),
+) == [too_long_retry.message_id]
+assert progress_updates == [(1, 1, too_long_retry.message_id, "ok")]
+_, compact_text, status, _ = compact_columns_at(
+    ELIGIBILITY_DB_PATH,
+    too_long_retry.message_id,
+)
+assert compact_text == "too long compact"
+assert status == "ok"
+
+retry_store = MemoryStore(db_path=str(RETRY_DB_PATH))
+retry_store.compaction_options.enabled = True
+retry_store.compaction_options.model = "fake-compact-model"
+retry_store.compaction_options.min_chars = 20
+retry_store.compaction_options.max_chars = 10000
+retry_store.compaction_options.mode = "background"
+
+retry_fake = FakeCompactor(None)
+retry_store.compactor = retry_fake
+retry_raw = "Retry attempt accounting should keep raw text as source of truth. " * 3
+retry_result = retry_store.add_message("user", retry_raw, extract_structured=False)
+assert retry_store.run_pending_compactions(limit=1) == []
+assert retry_fake.calls == 1
+assert compact_attempts_at(RETRY_DB_PATH, retry_result.message_id) == 1
+
+assert retry_store.compact_existing_messages(limit=1, max_attempts=2) == []
+assert retry_fake.calls == 2
+assert compact_attempts_at(RETRY_DB_PATH, retry_result.message_id) == 2
+stored_raw, compact_text, status, _ = compact_columns_at(
+    RETRY_DB_PATH,
+    retry_result.message_id,
+)
+assert stored_raw == retry_raw
+assert compact_text is None
+assert status == "failed"
+
+assert retry_store.compact_existing_messages(limit=1, max_attempts=2) == []
+assert retry_fake.calls == 2
+assert compact_attempts_at(RETRY_DB_PATH, retry_result.message_id) == 2
 
 print("Message compaction test passed.")
