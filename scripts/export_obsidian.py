@@ -20,6 +20,14 @@ from pathlib import Path
 DEFAULT_DB_PATH = Path("./.data/chroma_db")
 DEFAULT_OUTPUT_PATH = Path("./.data/obsidian_memory")
 TIMELINE_PAGE_SIZE = 500
+OBSIDIAN_GRAPH_COLOR_GROUPS = [
+    ("path:\"active/messages\"", 0x00C8F0),
+    ("path:\"active/structured\"", 0x009688),
+    ("path:\"topics\"", 0x9966E6),
+    ("path:\"files\"", 0xF36C00),
+    ("path:\"profile\"", 0xE44DAD),
+    ("path:\"forgotten\"", 0xB73636),
+]
 PATH_RE = re.compile(
     r"\b(?:[\w.-]+/){1,8}[\w.-]+\."
     r"(?:py|ts|js|rs|go|md|json|yaml|yml|toml|sql|sh|css|html|tsx|jsx)\b"
@@ -94,6 +102,7 @@ class StructuredRow:
 
 @dataclass
 class TopicPolicy:
+    mode: str
     min_count: int
     allowlist: set[str]
     denylist: set[str]
@@ -104,6 +113,8 @@ class TopicPolicy:
             return False
         if canonical in self.allowlist:
             return True
+        if self.mode == "allowlist":
+            return False
         return counts.get(canonical, 0) >= self.min_count
 
 
@@ -122,6 +133,7 @@ def split_config_list(value: str) -> set[str]:
 
 def load_topic_policy(config_path: Path | None = None) -> TopicPolicy:
     policy = TopicPolicy(
+        mode="count",
         min_count=DEFAULT_TOPIC_MIN_COUNT,
         allowlist=set(DEFAULT_TOPIC_ALLOWLIST),
         denylist=set(DEFAULT_TOPIC_DENYLIST),
@@ -137,6 +149,10 @@ def load_topic_policy(config_path: Path | None = None) -> TopicPolicy:
         return policy
 
     section = parser["obsidian.topics"]
+    if section.get("mode"):
+        mode = section["mode"].strip().lower()
+        if mode in {"allowlist", "count"}:
+            policy.mode = mode
     if section.get("min_count"):
         try:
             policy.min_count = max(1, int(section["min_count"]))
@@ -278,6 +294,9 @@ class Hub:
     stem: str
     hub_type: str
     canonical: str
+    title: str | None = None
+    description: str | None = None
+    aliases: tuple[str, ...] = ()
 
 
 class HubRegistry:
@@ -285,7 +304,14 @@ class HubRegistry:
         self._by_key: dict[tuple[str, str], Hub] = {}
         self._slug_sources: dict[tuple[str, str], str] = {}
 
-    def add(self, hub_type: str, canonical: str) -> Hub:
+    def add(
+        self,
+        hub_type: str,
+        canonical: str,
+        title: str | None = None,
+        description: str | None = None,
+        aliases: list[str] | tuple[str, ...] | None = None,
+    ) -> Hub:
         canonical = canonical.strip()
         key = (hub_type, canonical.lower())
         if key in self._by_key:
@@ -301,7 +327,14 @@ class HubRegistry:
             self._slug_sources[slug_key] = canonical.lower()
 
         stem = "profile/user" if hub_type == "profile" else f"{hub_type}s/{slug}"
-        hub = Hub(stem=stem, hub_type=hub_type, canonical=canonical)
+        hub = Hub(
+            stem=stem,
+            hub_type=hub_type,
+            canonical=canonical,
+            title=title,
+            description=description,
+            aliases=tuple(aliases or ()),
+        )
         self._by_key[key] = hub
         return hub
 
@@ -393,6 +426,51 @@ def evidence_refs_for_message(message: MessageRow, structured: list[StructuredRo
     return refs
 
 
+def load_topic_taxonomy(db_path: Path) -> dict | None:
+    path = db_path / "topic_taxonomy.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("topics"), list):
+        return None
+    return data
+
+
+def build_taxonomy_topic_hubs(
+    taxonomy: dict | None,
+    registry: HubRegistry,
+) -> dict[str, list[Hub]] | None:
+    if taxonomy is None:
+        return None
+    by_structured_id: dict[str, list[Hub]] = {}
+    for topic in taxonomy.get("topics", []):
+        if not isinstance(topic, dict):
+            continue
+        topic_id = str(topic.get("id", "")).strip()
+        title = str(topic.get("title", "")).strip()
+        if not topic_id or not title:
+            continue
+        aliases = topic.get("aliases", [])
+        structured_ids = topic.get("structured_ids", [])
+        if not isinstance(aliases, list):
+            aliases = []
+        if not isinstance(structured_ids, list):
+            structured_ids = []
+        hub = registry.add(
+            "topic",
+            topic_id,
+            title=title,
+            description=str(topic.get("description", "")).strip(),
+            aliases=[str(item) for item in aliases],
+        )
+        for structured_id in structured_ids:
+            by_structured_id.setdefault(str(structured_id), []).append(hub)
+    return by_structured_id
+
+
 def message_preview(message: MessageRow, limit: int = 120) -> str:
     return escape_raw_wikilinks(" ".join(message_display_text(message).split())[:limit])
 
@@ -403,20 +481,24 @@ def hubs_for_structured(
     topic_policy: TopicPolicy,
     counts: dict[str, int],
     file_policy: FileHubPolicy,
+    taxonomy_topic_hubs: dict[str, list[Hub]] | None = None,
     create: bool = False,
 ) -> list[Hub]:
     hubs: list[Hub] = []
-    seen_tags = set()
-    for tag in sorted(obj.tags, key=lambda value: value.lower()):
-        key = tag.strip().lower()
-        if not key or key in seen_tags:
-            continue
-        seen_tags.add(key)
-        if not topic_policy.allows(tag, counts):
-            continue
-        hub = registry.add("topic", tag) if create else registry.get("topic", tag)
-        if hub:
-            hubs.append(hub)
+    if taxonomy_topic_hubs is not None:
+        hubs.extend(taxonomy_topic_hubs.get(obj.id, []))
+    else:
+        seen_tags = set()
+        for tag in sorted(obj.tags, key=lambda value: value.lower()):
+            key = tag.strip().lower()
+            if not key or key in seen_tags:
+                continue
+            seen_tags.add(key)
+            if not topic_policy.allows(tag, counts):
+                continue
+            hub = registry.add("topic", tag) if create else registry.get("topic", tag)
+            if hub:
+                hubs.append(hub)
 
     if obj.type in PROFILE_HUB_TYPES:
         hub = registry.add("profile", "user") if create else registry.get("profile", "user")
@@ -443,28 +525,39 @@ def build_hub_registry(
     topic_policy: TopicPolicy,
     counts: dict[str, int],
     file_policy: FileHubPolicy,
+    taxonomy_topic_hubs: dict[str, list[Hub]] | None = None,
+    registry: HubRegistry | None = None,
 ) -> HubRegistry:
-    registry = HubRegistry()
+    registry = registry or HubRegistry()
     for obj in structured:
-        hubs_for_structured(obj, registry, topic_policy, counts, file_policy, create=True)
+        hubs_for_structured(
+            obj,
+            registry,
+            topic_policy,
+            counts,
+            file_policy,
+            taxonomy_topic_hubs=taxonomy_topic_hubs,
+            create=True,
+        )
     return registry
 
 
 def hub_markdown(hub: Hub) -> str:
-    title = hub.stem
+    title = hub.title or hub.stem
     parts = [
         frontmatter(
             {
                 "generated": "ragmemory-export",
                 "hub_type": hub.hub_type,
                 "canonical": hub.canonical,
+                "aliases": list(hub.aliases),
                 "cssclasses": ["hub"],
             }
         ),
         "",
         f"# {title}",
         "",
-        f"Auto-generated `{hub.hub_type}` hub for `{hub.canonical}`.",
+        hub.description or f"Auto-generated `{hub.hub_type}` hub for `{hub.canonical}`.",
         "",
     ]
     return "\n".join(parts)
@@ -527,10 +620,19 @@ def structured_markdown(
     topic_policy: TopicPolicy,
     counts: dict[str, int],
     file_policy: FileHubPolicy,
+    taxonomy_topic_hubs: dict[str, list[Hub]] | None = None,
 ) -> str:
     message = message_lookup.get(obj.message_id)
     status = "forgotten" if message and message.tombstoned else "active"
-    hubs = hubs_for_structured(obj, hub_registry, topic_policy, counts, file_policy, create=False)
+    hubs = hubs_for_structured(
+        obj,
+        hub_registry,
+        topic_policy,
+        counts,
+        file_policy,
+        taxonomy_topic_hubs=taxonomy_topic_hubs,
+        create=False,
+    )
     topic_hubs = [hub for hub in hubs if hub.hub_type == "topic"]
     file_hubs = [hub for hub in hubs if hub.hub_type == "file"]
     profile_hubs = [hub for hub in hubs if hub.hub_type == "profile"]
@@ -765,8 +867,68 @@ def is_generated_hub(path: Path) -> bool:
     )
 
 
+def is_stale_root_structured_note(path: Path) -> bool:
+    if not path.exists() or not path.name.startswith("sm_") or path.suffix != ".md":
+        return False
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    if not text.strip():
+        return True
+    if not text.startswith("---\n") or text.count("---") < 2:
+        return False
+    frontmatter_text = text.split("---", 2)[1]
+    return (
+        "generated: \"ragmemory-export\"\n" in frontmatter_text
+        and "cssclasses: [\"memory-structured\"]" in frontmatter_text
+    )
+
+
+def is_blank_obsidian_untitled(path: Path) -> bool:
+    if path.name == "Untitled.canvas":
+        return path.read_text(encoding="utf-8").strip() == "{}"
+    if path.name == "Untitled.base":
+        return path.read_text(encoding="utf-8").replace("\r\n", "\n").strip() == (
+            "views:\n  - type: table\n    name: Table"
+        )
+    return False
+
+
+def configure_obsidian_graph(output_path: Path) -> Path:
+    graph_path = output_path / ".obsidian" / "graph.json"
+    graph_path.parent.mkdir(parents=True, exist_ok=True)
+    if graph_path.exists():
+        data = json.loads(graph_path.read_text(encoding="utf-8-sig"))
+    else:
+        data = {}
+
+    data.setdefault("collapse-filter", True)
+    data.setdefault("search", "")
+    data.setdefault("showTags", False)
+    data.setdefault("showAttachments", False)
+    data.setdefault("hideUnresolved", False)
+    data.setdefault("showOrphans", True)
+    data["collapse-color-groups"] = False
+    data["colorGroups"] = [
+        {"query": query, "color": {"a": 1, "rgb": rgb}}
+        for query, rgb in OBSIDIAN_GRAPH_COLOR_GROUPS
+    ]
+    graph_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return graph_path
+
+
 def clean_stale_markdown(root: Path, expected: set[Path]) -> int:
     removed = 0
+    for name in ("Untitled.base", "Untitled.canvas"):
+        path = root / name
+        if path.exists() and is_blank_obsidian_untitled(path):
+            path.unlink()
+            removed += 1
+    for path in root.glob("sm_*.md"):
+        if path not in expected and is_stale_root_structured_note(path):
+            path.unlink()
+            removed += 1
     generated_folders = (
         "active/messages",
         "active/structured",
@@ -809,12 +971,17 @@ def export_obsidian(
     message_lookup = {message.message_id: message for message in messages}
     topic_policy = load_topic_policy(config_path)
     file_policy = load_file_hub_policy(config_path)
+    taxonomy = load_topic_taxonomy(db_path)
     counts = topic_counts(active_structured_rows(structured, message_lookup))
+    hub_registry = HubRegistry()
+    taxonomy_topic_hubs = build_taxonomy_topic_hubs(taxonomy, hub_registry)
     hub_registry = build_hub_registry(
         active_structured_rows(structured, message_lookup),
         topic_policy,
         counts,
         file_policy,
+        taxonomy_topic_hubs=taxonomy_topic_hubs,
+        registry=hub_registry,
     )
     messages_by_id = sorted(messages, key=lambda message: message.message_id)
     active_messages = [message for message in messages_by_id if not message.tombstoned]
@@ -844,7 +1011,18 @@ def export_obsidian(
         folder = "forgotten" if message is None or message.tombstoned else "active"
         path = output_path / folder / "structured" / f"{structured_stem(obj.id)}.md"
         expected.add(path)
-        if write_if_changed(path, structured_markdown(obj, message_lookup, hub_registry, topic_policy, counts, file_policy)):
+        if write_if_changed(
+            path,
+            structured_markdown(
+                obj,
+                message_lookup,
+                hub_registry,
+                topic_policy,
+                counts,
+                file_policy,
+                taxonomy_topic_hubs=taxonomy_topic_hubs,
+            ),
+        ):
             written += 1
 
     index_path = output_path / "index.md"
@@ -866,6 +1044,7 @@ def export_obsidian(
         written += 1
 
     removed = clean_stale_markdown(output_path, expected)
+    configure_obsidian_graph(output_path)
     return {
         "messages": len(messages),
         "structured": len(structured),

@@ -115,6 +115,16 @@ def _load_settings_file(path: Path) -> None:
         ):
             if section.get(key):
                 os.environ.setdefault(env_name, section[key].strip())
+    if parser.has_section("topic_regroup"):
+        section = parser["topic_regroup"]
+        for key, env_name in (
+            ("provider", "RAGMEMORY_TOPIC_PROVIDER"),
+            ("model", "RAGMEMORY_TOPIC_MODEL"),
+            ("max_tokens", "RAGMEMORY_TOPIC_MAX_TOKENS"),
+            ("thinking", "RAGMEMORY_TOPIC_THINKING"),
+        ):
+            if section.get(key):
+                os.environ.setdefault(env_name, section[key].strip())
     if parser.has_section("llm"):
         section = parser["llm"]
         if section.get("structured_provider"):
@@ -191,6 +201,7 @@ from .structured import (
     StructuredMemoryExtractor,
     StructuredMemoryStore,
 )
+from .topics import JOB_TYPE_TOPIC_REGROUP, regroup_topics_with_llm, topic_taxonomy_path
 
 
 RECENT_MESSAGES = 12
@@ -217,6 +228,7 @@ JOB_STATUS_PENDING = "pending"
 JOB_STATUS_RUNNING = "running"
 JOB_STATUS_DONE = "done"
 JOB_STATUS_FAILED = "failed"
+TOPIC_REGROUP_MESSAGE_INTERVAL = 500
 
 PATH_TOKEN_RE = re.compile(
     r"(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|/)[^\s`\"'()\[\]]{1,180}\.[A-Za-z0-9_]{1,16}"
@@ -675,7 +687,7 @@ class MemoryStore:
         )
 
     def enqueue_job(self, job_type: str, message_id: int) -> str | None:
-        if job_type not in {JOB_TYPE_STRUCTURED_EXTRACT, JOB_TYPE_COMPACT}:
+        if job_type not in {JOB_TYPE_STRUCTURED_EXTRACT, JOB_TYPE_COMPACT, JOB_TYPE_TOPIC_REGROUP}:
             raise ValueError(f"unknown job_type: {job_type}")
         job_id = f"job_{uuid.uuid4()}"
         with sqlite3.connect(self.state_db) as conn:
@@ -695,6 +707,45 @@ class MemoryStore:
             job_type=job_type,
             message_id=message_id,
         )
+        return job_id
+
+    def enqueue_topic_regroup(self) -> str | None:
+        with sqlite3.connect(self.state_db) as conn:
+            existing = conn.execute(
+                """
+                SELECT job_id
+                FROM jobs
+                WHERE job_type = ?
+                  AND status IN (?, ?)
+                ORDER BY created_at
+                LIMIT 1
+                """,
+                (JOB_TYPE_TOPIC_REGROUP, JOB_STATUS_PENDING, JOB_STATUS_RUNNING),
+            ).fetchone()
+        if existing:
+            self._log_event(
+                "topic_regroup_queue_deduped",
+                job_id=existing[0],
+            )
+            return None
+        return self.enqueue_job(JOB_TYPE_TOPIC_REGROUP, 0)
+
+    def _maybe_queue_topic_regroup(self, message_id: int) -> str | None:
+        interval = TOPIC_REGROUP_MESSAGE_INTERVAL
+        if interval <= 0:
+            return None
+        saved_count = message_id + 1
+        if saved_count % interval != 0:
+            return None
+        job_id = self.enqueue_topic_regroup()
+        if job_id:
+            self._log_event(
+                "topic_regroup_auto_queued",
+                job_id=job_id,
+                message_id=message_id,
+                saved_count=saved_count,
+                interval=interval,
+            )
         return job_id
 
     def claim_next_job(self, job_type: str | None = None) -> BackgroundJob | None:
@@ -823,7 +874,23 @@ class MemoryStore:
             ).fetchone()
         return row if row is not None else None
 
+    def regroup_topics(self) -> str:
+        taxonomy = regroup_topics_with_llm(
+            self.db_path,
+            list(self.structured.objects.values()),
+        )
+        path = topic_taxonomy_path(self.db_path)
+        self._log_event(
+            "topic_regroup_completed",
+            topic_count=len(taxonomy.get("topics", [])),
+            structured_count=taxonomy.get("source_object_count", 0),
+            taxonomy_path=str(path),
+        )
+        return str(path)
+
     def process_background_job(self, job: BackgroundJob) -> list[str] | list[int]:
+        if job.job_type == JOB_TYPE_TOPIC_REGROUP:
+            return [self.regroup_topics()]
         row = self._message_for_job(job.message_id)
         if row is None:
             self._log_event(
@@ -1555,6 +1622,9 @@ class MemoryStore:
             compact_job_id = self._maybe_compact_message(role, text, message_id)
             if compact_job_id:
                 queued_job_ids.append(compact_job_id)
+            topic_job_id = self._maybe_queue_topic_regroup(message_id)
+            if topic_job_id:
+                queued_job_ids.append(topic_job_id)
             self._log_event(
                 "message_saved",
                 role=role,
@@ -1596,6 +1666,9 @@ class MemoryStore:
         compact_job_id = self._maybe_compact_message(role, text, message_id)
         if compact_job_id:
             queued_job_ids.append(compact_job_id)
+        topic_job_id = self._maybe_queue_topic_regroup(message_id)
+        if topic_job_id:
+            queued_job_ids.append(topic_job_id)
         self._log_event(
             "message_saved",
             role=role,

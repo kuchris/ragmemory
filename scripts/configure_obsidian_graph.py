@@ -2,47 +2,22 @@
 from __future__ import annotations
 
 import argparse
-import json
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.export_obsidian import OBSIDIAN_GRAPH_COLOR_GROUPS, configure_obsidian_graph
 
 
 DEFAULT_VAULT = Path("./.data/obsidian_memory")
-
-COLOR_GROUPS = [
-    ("path:\"active/messages\"", 0x00C8F0),
-    ("path:\"active/structured\"", 0x009688),
-    ("path:\"topics\"", 0x9966E6),
-    ("path:\"files\"", 0xF36C00),
-    ("path:\"profile\"", 0xE44DAD),
-    ("path:\"forgotten\"", 0xB73636),
-]
+COLOR_GROUPS = OBSIDIAN_GRAPH_COLOR_GROUPS
 
 
 def configure_graph(vault: Path) -> Path:
-    graph_path = vault / ".obsidian" / "graph.json"
-    graph_path.parent.mkdir(parents=True, exist_ok=True)
-    if graph_path.exists():
-        data = json.loads(graph_path.read_text(encoding="utf-8-sig"))
-    else:
-        data = {}
-
-    data.setdefault("collapse-filter", True)
-    data.setdefault("search", "")
-    data.setdefault("showTags", False)
-    data.setdefault("showAttachments", False)
-    data.setdefault("hideUnresolved", False)
-    data.setdefault("showOrphans", True)
-    data["collapse-color-groups"] = False
-    data["colorGroups"] = [
-        {"query": query, "color": {"a": 1, "rgb": rgb}}
-        for query, rgb in COLOR_GROUPS
-    ]
-
-    graph_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    return graph_path
+    return configure_obsidian_graph(vault)
 
 
 def main(argv: list[str] | None = None) -> int:

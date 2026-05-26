@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
-    parser.add_argument("--max-topic-hubs", type=int, default=20)
+    parser.add_argument("--max-topic-hubs", type=int, default=300)
     parser.add_argument("--no-export", action="store_true", help="Check existing Markdown without refreshing it.")
     args = parser.parse_args(argv)
 

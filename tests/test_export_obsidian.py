@@ -153,9 +153,17 @@ structured = [
     "\n".join(json.dumps(item, ensure_ascii=False) for item in structured) + "\n",
     encoding="utf-8",
 )
+(OUT_PATH / "sm_empty_stale.md").parent.mkdir(parents=True, exist_ok=True)
+(OUT_PATH / "sm_empty_stale.md").write_text("", encoding="utf-8")
+(OUT_PATH / "Untitled.base").write_text(
+    "views:\n  - type: table\n    name: Table\n",
+    encoding="utf-8",
+)
+(OUT_PATH / "Untitled.canvas").write_text("{}\n", encoding="utf-8")
 CONFIG_PATH.write_text(
     """
 [obsidian.topics]
+mode = count
 min_count = 2
 allowlist = ragmemory, mirror, c
 denylist = code_reference, config, decision, constraint, preference,
@@ -173,6 +181,10 @@ enable = true
 first = module.export_obsidian(DB_PATH, OUT_PATH, timeline_page_size=2, config_path=CONFIG_PATH)
 assert first["messages"] == 3
 assert first["structured"] == 6
+assert first["removed"] >= 3
+assert not (OUT_PATH / "sm_empty_stale.md").exists()
+assert not (OUT_PATH / "Untitled.base").exists()
+assert not (OUT_PATH / "Untitled.canvas").exists()
 
 active_msg = OUT_PATH / "active/messages/msg-000001.md"
 forgotten_msg = OUT_PATH / "forgotten/messages/msg-000002.md"
@@ -271,6 +283,10 @@ assert "Rule: one user message plus contiguous following assistant messages" in 
 assert "[[msg-000001]]" in turns_text
 assert "[[msg-000003]]" in turns_text
 assert "cssclasses: [\"navigation\"]" in (OUT_PATH / "index.md").read_text(encoding="utf-8")
+graph = json.loads((OUT_PATH / ".obsidian/graph.json").read_text(encoding="utf-8"))
+assert graph["collapse-color-groups"] is False
+assert graph["colorGroups"]
+assert any(group["query"] == 'path:"active/structured"' for group in graph["colorGroups"])
 
 note_stems = set()
 for note in OUT_PATH.rglob("*.md"):
@@ -335,6 +351,37 @@ second = module.export_obsidian(DB_PATH, OUT_PATH, timeline_page_size=2, config_
 assert second["written"] == 0
 assert second["removed"] == 0
 assert mtimes == {path: path.stat().st_mtime_ns for path in mtimes}
+
+(DB_PATH / "topic_taxonomy.json").write_text(
+    json.dumps(
+        {
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "model": "test-model",
+            "source_object_count": 6,
+            "topics": [
+                {
+                    "id": "curated-mirror",
+                    "title": "Curated mirror",
+                    "description": "Curated mirror topic.",
+                    "aliases": ["mirror"],
+                    "structured_ids": ["sm_active", "sm_repeat"],
+                }
+            ],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+taxonomy_export = module.export_obsidian(DB_PATH, OUT_PATH, timeline_page_size=2, config_path=CONFIG_PATH)
+assert taxonomy_export["removed"] >= 1
+curated_topic = OUT_PATH / "topics/curated-mirror.md"
+assert curated_topic.exists()
+assert "Curated mirror topic." in curated_topic.read_text(encoding="utf-8")
+assert not topic_mirror.exists()
+assert "[[topics/curated-mirror]]" in active_structured.read_text(encoding="utf-8")
+assert "[[topics/mirror]]" not in active_structured.read_text(encoding="utf-8")
 
 with sqlite3.connect(DB_PATH / "state.sqlite") as conn:
     conn.execute("UPDATE messages SET tombstoned = 1 WHERE message_id = 1")

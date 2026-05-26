@@ -269,7 +269,8 @@ The graph is intentionally filtered:
 - chronology links are frontmatter, not body wikilinks
 - raw messages with no structured links get `memory-unlinked`
 - file hubs are off by default
-- topic hubs use allowlist, denylist, and `min_count`
+- topic hubs fall back to count-based tags with allowlist, denylist, and
+  `min_count`; `topic_taxonomy.json` can replace raw tags with curated topics
 
 Useful Obsidian graph filter:
 

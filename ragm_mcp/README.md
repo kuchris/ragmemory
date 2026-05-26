@@ -103,8 +103,9 @@ navigation from Obsidian graph view, use:
 ```
 
 Topic hubs are filtered by `[obsidian.topics]` in `ragmemory.local.ini`.
-Denylisted artifact/type/language tags are hidden, allowlisted tags are always
-shown, and other tags need to recur at least `min_count` times.
+When no curated taxonomy exists, non-denylisted tags that recur at least
+`min_count` times become hubs. A worker-generated `topic_taxonomy.json` can
+replace raw tag hubs with LLM-curated topics.
 
 ## Claude Desktop Config
 
