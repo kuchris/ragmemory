@@ -16,6 +16,7 @@ TOPIC_TAXONOMY_FILE = "topic_taxonomy.json"
 JOB_TYPE_TOPIC_REGROUP = "topic_regroup"
 DEFAULT_TOPIC_REGROUP_MAX_TOKENS = 6000
 DEFAULT_TOPIC_REGROUP_MAX_INPUT_TOPICS = 150
+DEFAULT_TOPIC_REGROUP_MIN_GROUPS = 10
 
 
 def _env_int(name: str, default: int) -> int:
@@ -125,6 +126,7 @@ class TopicRegroupOptions:
     enabled: bool = True
     max_tokens: int = DEFAULT_TOPIC_REGROUP_MAX_TOKENS
     max_input_topics: int = DEFAULT_TOPIC_REGROUP_MAX_INPUT_TOPICS
+    min_groups: int = DEFAULT_TOPIC_REGROUP_MIN_GROUPS
     thinking: str = ""
 
     @classmethod
@@ -143,6 +145,7 @@ class TopicRegroupOptions:
                 1,
                 _env_int("RAGMEMORY_TOPIC_MAX_INPUT_TOPICS", DEFAULT_TOPIC_REGROUP_MAX_INPUT_TOPICS),
             ),
+            min_groups=max(1, _env_int("RAGMEMORY_TOPIC_MIN_GROUPS", DEFAULT_TOPIC_REGROUP_MIN_GROUPS)),
             thinking=os.environ.get("RAGMEMORY_TOPIC_THINKING", "").strip().lower(),
         )
 
@@ -313,6 +316,7 @@ def save_validated_topic_taxonomy(
 def build_topic_regroup_prompt(
     objects: list[StructuredMemoryObject],
     max_input_topics: int = DEFAULT_TOPIC_REGROUP_MAX_INPUT_TOPICS,
+    min_groups: int = DEFAULT_TOPIC_REGROUP_MIN_GROUPS,
 ) -> str:
     payload = _topic_input_candidates(objects, max_input_topics)
     return f"""Group RagMemory leaf topics into a higher-level Obsidian topic map.
@@ -320,6 +324,7 @@ def build_topic_regroup_prompt(
 Input rows are existing leaf topics, not raw memories. Each row includes topic id, title, object count, object types, and a few sample summaries.
 Do not remove, replace, or rename the input leaf topics.
 Create upper-layer groups that contain related topic_ids.
+Create at least {min_groups} groups when there are enough distinct leaf topics.
 It is okay to leave narrow or unclear topic_ids ungrouped.
 Avoid generic language/type groups such as python, powershell, text, config, decision, preference.
 Every object in an array must be comma-separated.
@@ -366,7 +371,14 @@ def regroup_topics_with_llm(
                 "role": "system",
                 "content": "You curate concise topic taxonomies for a local coding memory graph. Return strict JSON only.",
             },
-            {"role": "user", "content": build_topic_regroup_prompt(objects, options.max_input_topics)},
+            {
+                "role": "user",
+                "content": build_topic_regroup_prompt(
+                    objects,
+                    options.max_input_topics,
+                    options.min_groups,
+                ),
+            },
         ],
         temperature=0,
         max_tokens=options.max_tokens,
@@ -379,6 +391,15 @@ def regroup_topics_with_llm(
     data["source_object_count"] = len(objects)
     topic_candidates = _topic_input_candidates(objects, options.max_input_topics)
     data["source_topic_count"] = len(topic_candidates)
+    min_groups = min(options.min_groups, len(topic_candidates))
+    groups = data.get("groups", [])
+    if len(topic_candidates) >= options.min_groups and (
+        not isinstance(groups, list) or len(groups) < min_groups
+    ):
+        raise ValueError(
+            f"topic regroup returned {len(groups) if isinstance(groups, list) else 0} group(s); "
+            f"expected at least {min_groups}"
+        )
     valid_ids = {obj.id for obj in objects}
     valid_topic_ids = {item["id"] for item in topic_candidates}
     return save_validated_topic_taxonomy(topic_taxonomy_path(db_path), data, valid_ids, valid_topic_ids)

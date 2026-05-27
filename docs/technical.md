@@ -308,6 +308,7 @@ Local config:
 | `scripts/inspect_events.py` | Inspect event log. |
 | `scripts/export_obsidian.py` | Generate Obsidian mirror. |
 | `scripts/regroup_topics.py` | Create or queue LLM-curated topic groups. |
+| `scripts/generate_wiki.py` | Generate non-LLM wiki pages from topic groups. |
 | `scripts/animate_obsidian_graph.py` | Render the Obsidian graph as a growing GIF. |
 | `scripts/check_obsidian_graph.py` | Smoke-test generated graph quality. |
 | `scripts/remove_memory.py` | Preview/confirm tombstone removal. |

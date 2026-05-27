@@ -9,14 +9,17 @@ import os
 import shutil
 from pathlib import Path
 
+import ragmemory.topics as topics_module
 from ragmemory.memory import BackgroundJob, JOB_TYPE_TOPIC_REGROUP, MemoryStore
 from ragmemory.topics import (
     _extract_json_object,
     _load_topic_response_json,
     build_topic_llm_options,
+    regroup_topics_with_llm,
     save_validated_topic_taxonomy,
     TopicRegroupOptions,
 )
+from ragmemory.models import StructuredMemoryObject
 
 
 DB_PATH = Path("./.data/topic_regroup_test")
@@ -95,11 +98,58 @@ assert repaired["groups"][0]["id"] == "memory-graph"
 assert len(repair_client.calls) == 1
 assert repair_client.calls[0][2] == 123
 
+
+class TooFewGroupsClient:
+    last_error = None
+
+    def __init__(self, _options):
+        pass
+
+    def complete_chat(self, messages, temperature, max_tokens):
+        return '{"groups": [{"id": "only-one", "title": "Only one", "topic_ids": ["topic-0"]}]}'
+
+
+structured_for_min_groups = [
+    StructuredMemoryObject(
+        id=f"sm_{index}",
+        type="decision",
+        summary=f"Summary {index}",
+        source_text=f"Source {index}",
+        tags=[f"topic-{index}"],
+        importance=0.5,
+        message_id=index,
+        role="assistant",
+    )
+    for index in range(12)
+]
+
+original_client = topics_module.LLMProviderClient
+topics_module.LLMProviderClient = TooFewGroupsClient
+try:
+    try:
+        regroup_topics_with_llm(
+            DB_PATH,
+            structured_for_min_groups,
+            options=TopicRegroupOptions(
+                provider="opencode_go",
+                model="deepseek-v4-flash",
+                min_groups=10,
+                max_input_topics=12,
+            ),
+        )
+    except ValueError as exc:
+        assert "expected at least 10" in str(exc)
+    else:
+        raise AssertionError("too few topic groups should fail")
+finally:
+    topics_module.LLMProviderClient = original_client
+
 env_keys = [
     "RAGMEMORY_TOPIC_ENABLE",
     "RAGMEMORY_TOPIC_PROVIDER",
     "RAGMEMORY_TOPIC_MODEL",
     "RAGMEMORY_TOPIC_MAX_INPUT_TOPICS",
+    "RAGMEMORY_TOPIC_MIN_GROUPS",
     "RAGMEMORY_TOPIC_THINKING",
     "RAGMEMORY_LLM_OPENCODE_GO_THINKING",
 ]
@@ -108,10 +158,12 @@ try:
     os.environ["RAGMEMORY_TOPIC_PROVIDER"] = "opencode_go"
     os.environ["RAGMEMORY_TOPIC_MODEL"] = "deepseek-v4-flash"
     os.environ["RAGMEMORY_TOPIC_MAX_INPUT_TOPICS"] = "7"
+    os.environ["RAGMEMORY_TOPIC_MIN_GROUPS"] = "3"
     os.environ["RAGMEMORY_TOPIC_THINKING"] = "disabled"
     os.environ["RAGMEMORY_LLM_OPENCODE_GO_THINKING"] = "enabled"
     topic_options = TopicRegroupOptions.from_env()
     assert topic_options.max_input_topics == 7
+    assert topic_options.min_groups == 3
     llm_options = build_topic_llm_options(topic_options)
     assert llm_options.extra_body == {"thinking": {"type": "disabled"}}
 finally:

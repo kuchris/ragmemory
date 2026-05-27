@@ -25,6 +25,7 @@ OBSIDIAN_GRAPH_COLOR_GROUPS = [
     ("path:\"active/structured\"", 0x009688),
     ("path:\"topic_groups\"", 0x6A5ACD),
     ("path:\"topics\"", 0x9966E6),
+    ("path:\"wiki\"", 0x2F80ED),
     ("path:\"files\"", 0xF36C00),
     ("path:\"profile\"", 0xE44DAD),
     ("path:\"forgotten\"", 0xB73636),

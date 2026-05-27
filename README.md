@@ -288,6 +288,7 @@ Configure the token budget in `ragmemory.local.ini`:
 [topic_regroup]
 enable = true
 max_input_topics = 150
+min_groups = 10
 max_tokens = 6000
 thinking = disabled
 ```
@@ -301,6 +302,18 @@ To queue the same work for the worker instead of running it immediately:
 ```powershell
 uv run python scripts/regroup_topics.py --queue --db-path ./.data/chroma_db
 uv run python scripts/run_worker.py --once --db-path ./.data/chroma_db
+```
+
+Generate non-LLM wiki pages from the current graph:
+
+```powershell
+uv run python scripts/generate_wiki.py --obsidian ./.data/obsidian_memory
+```
+
+Add cached LLM summaries one page at a time:
+
+```powershell
+uv run python scripts/generate_wiki.py --obsidian ./.data/obsidian_memory --config ragmemory.local.ini --llm --llm-limit 1
 ```
 
 Compacted messages may contain evidence references like:
@@ -456,4 +469,10 @@ The implementation details, architecture, scripts, and tests live in:
 
 ```text
 docs/technical.md
+```
+
+For a copy-paste command cheat sheet, see:
+
+```text
+docs/commands.md
 ```

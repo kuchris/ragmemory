@@ -123,6 +123,7 @@ def _load_settings_file(path: Path) -> None:
             ("enable", "RAGMEMORY_TOPIC_ENABLE"),
             ("max_tokens", "RAGMEMORY_TOPIC_MAX_TOKENS"),
             ("max_input_topics", "RAGMEMORY_TOPIC_MAX_INPUT_TOPICS"),
+            ("min_groups", "RAGMEMORY_TOPIC_MIN_GROUPS"),
             ("thinking", "RAGMEMORY_TOPIC_THINKING"),
         ):
             if section.get(key):
