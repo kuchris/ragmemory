@@ -968,7 +968,16 @@ def configure_obsidian_graph(output_path: Path) -> Path:
     graph_path = output_path / ".obsidian" / "graph.json"
     graph_path.parent.mkdir(parents=True, exist_ok=True)
     if graph_path.exists():
-        data = json.loads(graph_path.read_text(encoding="utf-8-sig"))
+        raw_graph = graph_path.read_text(encoding="utf-8-sig")
+        try:
+            data = json.loads(raw_graph)
+        except json.JSONDecodeError:
+            try:
+                data, _ = json.JSONDecoder().raw_decode(raw_graph)
+            except json.JSONDecodeError:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
     else:
         data = {}
 

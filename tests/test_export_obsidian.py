@@ -284,6 +284,12 @@ graph = json.loads((OUT_PATH / ".obsidian/graph.json").read_text(encoding="utf-8
 assert graph["collapse-color-groups"] is False
 assert graph["colorGroups"]
 assert any(group["query"] == 'path:"active/structured"' for group in graph["colorGroups"])
+graph_path = OUT_PATH / ".obsidian/graph.json"
+graph_path.write_text('{"scale": 0.42}\n  "scale": 0.42\n}\n', encoding="utf-8")
+module.configure_obsidian_graph(OUT_PATH)
+repaired_graph = json.loads(graph_path.read_text(encoding="utf-8"))
+assert repaired_graph["scale"] == 0.42
+assert repaired_graph["colorGroups"]
 
 note_stems = set()
 for note in OUT_PATH.rglob("*.md"):
