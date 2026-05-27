@@ -6,6 +6,7 @@ Run:
 """
 import shutil
 import sqlite3
+import os
 from pathlib import Path
 
 import ragmemory.memory as memory_module
@@ -18,7 +19,9 @@ if DB_PATH.exists():
     shutil.rmtree(DB_PATH, ignore_errors=True)
 
 original_interval = memory_module.TOPIC_REGROUP_MESSAGE_INTERVAL
+original_enable = os.environ.get("RAGMEMORY_TOPIC_ENABLE")
 memory_module.TOPIC_REGROUP_MESSAGE_INTERVAL = 2
+os.environ["RAGMEMORY_TOPIC_ENABLE"] = "true"
 
 try:
     store = MemoryStore(db_path=str(DB_PATH))
@@ -44,6 +47,10 @@ try:
     assert rows == [(JOB_TYPE_TOPIC_REGROUP, 0, "pending")]
 finally:
     memory_module.TOPIC_REGROUP_MESSAGE_INTERVAL = original_interval
+    if original_enable is None:
+        os.environ.pop("RAGMEMORY_TOPIC_ENABLE", None)
+    else:
+        os.environ["RAGMEMORY_TOPIC_ENABLE"] = original_enable
     if DB_PATH.exists():
         shutil.rmtree(DB_PATH, ignore_errors=True)
 

@@ -120,7 +120,9 @@ def _load_settings_file(path: Path) -> None:
         for key, env_name in (
             ("provider", "RAGMEMORY_TOPIC_PROVIDER"),
             ("model", "RAGMEMORY_TOPIC_MODEL"),
+            ("enable", "RAGMEMORY_TOPIC_ENABLE"),
             ("max_tokens", "RAGMEMORY_TOPIC_MAX_TOKENS"),
+            ("max_input_topics", "RAGMEMORY_TOPIC_MAX_INPUT_TOPICS"),
             ("thinking", "RAGMEMORY_TOPIC_THINKING"),
         ):
             if section.get(key):
@@ -201,7 +203,12 @@ from .structured import (
     StructuredMemoryExtractor,
     StructuredMemoryStore,
 )
-from .topics import JOB_TYPE_TOPIC_REGROUP, regroup_topics_with_llm, topic_taxonomy_path
+from .topics import (
+    JOB_TYPE_TOPIC_REGROUP,
+    TopicRegroupOptions,
+    regroup_topics_with_llm,
+    topic_taxonomy_path,
+)
 
 
 RECENT_MESSAGES = 12
@@ -710,6 +717,9 @@ class MemoryStore:
         return job_id
 
     def enqueue_topic_regroup(self) -> str | None:
+        if not TopicRegroupOptions.from_env().enabled:
+            self._log_event("topic_regroup_queue_skipped", reason="disabled")
+            return None
         with sqlite3.connect(self.state_db) as conn:
             existing = conn.execute(
                 """
@@ -875,21 +885,35 @@ class MemoryStore:
         return row if row is not None else None
 
     def regroup_topics(self) -> str:
+        options = TopicRegroupOptions.from_env()
+        if not options.enabled:
+            self._log_event("topic_regroup_skipped", reason="disabled")
+            raise RuntimeError("topic regroup disabled: set [topic_regroup] enable = true")
         taxonomy = regroup_topics_with_llm(
             self.db_path,
             list(self.structured.objects.values()),
+            options=options,
         )
         path = topic_taxonomy_path(self.db_path)
         self._log_event(
             "topic_regroup_completed",
             topic_count=len(taxonomy.get("topics", [])),
+            group_count=len(taxonomy.get("groups", [])),
             structured_count=taxonomy.get("source_object_count", 0),
+            source_topic_count=taxonomy.get("source_topic_count", 0),
             taxonomy_path=str(path),
         )
         return str(path)
 
     def process_background_job(self, job: BackgroundJob) -> list[str] | list[int]:
         if job.job_type == JOB_TYPE_TOPIC_REGROUP:
+            if not TopicRegroupOptions.from_env().enabled:
+                self._log_event(
+                    "topic_regroup_job_skipped",
+                    job_id=job.job_id,
+                    reason="disabled",
+                )
+                return []
             return [self.regroup_topics()]
         row = self._message_for_job(job.message_id)
         if row is None:

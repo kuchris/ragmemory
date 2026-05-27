@@ -259,6 +259,7 @@ Main generated folders:
 | `active/messages/` | Active raw message notes. |
 | `active/structured/` | Active structured memory notes. |
 | `forgotten/` | Tombstoned records. |
+| `topic_groups/` | Optional LLM-curated upper layer over leaf topics. |
 | `topics/` | Generated topic hubs. |
 | `files/` | Optional file/path hubs. |
 | `profile/` | User profile and identity/preference hub. |
@@ -270,7 +271,9 @@ The graph is intentionally filtered:
 - raw messages with no structured links get `memory-unlinked`
 - file hubs are off by default
 - topic hubs fall back to count-based tags with allowlist, denylist, and
-  `min_count`; `topic_taxonomy.json` can replace raw tags with curated topics
+  `min_count`
+- `topic_taxonomy.json` can add `topic_groups/` above leaf topics without
+  deleting or replacing the leaf `topics/` notes
 
 Useful Obsidian graph filter:
 
@@ -304,6 +307,8 @@ Local config:
 |------|---------|
 | `scripts/inspect_events.py` | Inspect event log. |
 | `scripts/export_obsidian.py` | Generate Obsidian mirror. |
+| `scripts/regroup_topics.py` | Create or queue LLM-curated topic groups. |
+| `scripts/animate_obsidian_graph.py` | Render the Obsidian graph as a growing GIF. |
 | `scripts/check_obsidian_graph.py` | Smoke-test generated graph quality. |
 | `scripts/remove_memory.py` | Preview/confirm tombstone removal. |
 | `scripts/ask_memory.py` | Print retrieved context for test prompts. |

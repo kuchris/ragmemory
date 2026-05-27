@@ -12,6 +12,7 @@ novels/
 ragmemory.local.ini
 .codegraph/
 .mcp.json
+decay_report.txt
 
 # Generated memory databases and smoke-test data
 .data/

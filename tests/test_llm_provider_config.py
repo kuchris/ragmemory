@@ -54,6 +54,9 @@ try:
     extraction_options = StructuredExtractionOptions.from_env()
     assert extraction_options.max_chars == 12
     assert extraction_options.max_tokens == 34
+    os.environ["RAGMEMORY_STRUCTURED_MAX_CHARS"] = "0"
+    extraction_options = StructuredExtractionOptions.from_env()
+    assert extraction_options.max_chars == 0
 
     os.environ["RAGMEMORY_COMPACT_MIN_CHARS"] = "56 # inline comment"
     os.environ["RAGMEMORY_COMPACT_MAX_TOKENS"] = "78 ; inline comment"

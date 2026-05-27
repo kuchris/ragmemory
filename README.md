@@ -230,6 +230,16 @@ Check that the Obsidian graph export stays clean:
 uv run python scripts/check_obsidian_graph.py
 ```
 
+Create an animated GIF that shows the map forming over time:
+
+```powershell
+uv run python scripts/animate_obsidian_graph.py --obsidian ./.data/obsidian_memory --output ./.data/graph_animation/ragmemory-map-formed.gif
+```
+
+By default this renders every memory graph node, including raw message notes.
+For every Markdown note Obsidian can see, add `--include-navigation`. For a
+smaller explainer GIF, add `--exclude-messages --max-nodes 900`.
+
 If the graph shows isolated message dots, hide raw message notes that have no
 structured links with this Obsidian graph filter:
 
@@ -255,6 +265,42 @@ Open this folder in Obsidian:
 
 ```text
 .data/obsidian_memory
+```
+
+### Optional: Topic Groups
+
+The normal Obsidian export keeps leaf topic hubs under `topics/`. If the graph
+gets too dense, run the topic regroup step to add an upper layer under
+`topic_groups/`:
+
+```powershell
+uv run python scripts/regroup_topics.py --run --db-path ./.data/chroma_db
+uv run python scripts/export_obsidian.py --db-path ./.data/chroma_db --output ./.data/obsidian_memory --config ragmemory.local.ini
+```
+
+This writes `.data/chroma_db/topic_taxonomy.json`. The regroup step does not
+delete or rewrite the existing leaf topics; it asks the LLM to create group
+notes that link to related leaf topics.
+
+Configure the token budget in `ragmemory.local.ini`:
+
+```ini
+[topic_regroup]
+enable = true
+max_input_topics = 150
+max_tokens = 6000
+thinking = disabled
+```
+
+`max_input_topics` limits how many leaf-topic summaries are sent to the LLM for
+grouping. Topics outside that limit stay in `topics/`; they are just ungrouped
+for that run.
+
+To queue the same work for the worker instead of running it immediately:
+
+```powershell
+uv run python scripts/regroup_topics.py --queue --db-path ./.data/chroma_db
+uv run python scripts/run_worker.py --once --db-path ./.data/chroma_db
 ```
 
 Compacted messages may contain evidence references like:

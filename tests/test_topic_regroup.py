@@ -12,6 +12,7 @@ from pathlib import Path
 from ragmemory.memory import BackgroundJob, JOB_TYPE_TOPIC_REGROUP, MemoryStore
 from ragmemory.topics import (
     _extract_json_object,
+    _load_topic_response_json,
     build_topic_llm_options,
     save_validated_topic_taxonomy,
     TopicRegroupOptions,
@@ -72,9 +73,33 @@ except ValueError as exc:
 else:
     raise AssertionError("empty topic response should fail")
 
+
+class FakeRepairClient:
+    last_error = None
+
+    def __init__(self):
+        self.calls = []
+
+    def complete_chat(self, messages, temperature, max_tokens):
+        self.calls.append((messages, temperature, max_tokens))
+        return '{"groups": [{"id": "memory-graph", "title": "Memory graph", "topic_ids": ["mirror"]}]}'
+
+
+repair_client = FakeRepairClient()
+repaired = _load_topic_response_json(
+    '{"groups": [{"id": "bad", "title": "Bad"} {"id": "missing-comma"}]}',
+    repair_client,
+    repair_max_tokens=123,
+)
+assert repaired["groups"][0]["id"] == "memory-graph"
+assert len(repair_client.calls) == 1
+assert repair_client.calls[0][2] == 123
+
 env_keys = [
+    "RAGMEMORY_TOPIC_ENABLE",
     "RAGMEMORY_TOPIC_PROVIDER",
     "RAGMEMORY_TOPIC_MODEL",
+    "RAGMEMORY_TOPIC_MAX_INPUT_TOPICS",
     "RAGMEMORY_TOPIC_THINKING",
     "RAGMEMORY_LLM_OPENCODE_GO_THINKING",
 ]
@@ -82,9 +107,11 @@ saved_env = {key: os.environ.get(key) for key in env_keys}
 try:
     os.environ["RAGMEMORY_TOPIC_PROVIDER"] = "opencode_go"
     os.environ["RAGMEMORY_TOPIC_MODEL"] = "deepseek-v4-flash"
+    os.environ["RAGMEMORY_TOPIC_MAX_INPUT_TOPICS"] = "7"
     os.environ["RAGMEMORY_TOPIC_THINKING"] = "disabled"
     os.environ["RAGMEMORY_LLM_OPENCODE_GO_THINKING"] = "enabled"
     topic_options = TopicRegroupOptions.from_env()
+    assert topic_options.max_input_topics == 7
     llm_options = build_topic_llm_options(topic_options)
     assert llm_options.extra_body == {"thinking": {"type": "disabled"}}
 finally:
@@ -94,11 +121,15 @@ finally:
         else:
             os.environ[key] = value
 
-store = MemoryStore(db_path=str(DB_PATH))
-job_id = store.enqueue_topic_regroup()
-assert job_id
-deduped = store.enqueue_topic_regroup()
-assert deduped is None
+os.environ["RAGMEMORY_TOPIC_ENABLE"] = "true"
+try:
+    store = MemoryStore(db_path=str(DB_PATH))
+    job_id = store.enqueue_topic_regroup()
+    assert job_id
+    deduped = store.enqueue_topic_regroup()
+    assert deduped is None
+finally:
+    os.environ.pop("RAGMEMORY_TOPIC_ENABLE", None)
 
 expected_path = str(TAXONOMY_PATH)
 store.regroup_topics = lambda: expected_path
@@ -111,6 +142,22 @@ result = store.process_background_job(
     )
 )
 assert result == [expected_path]
+
+os.environ["RAGMEMORY_TOPIC_ENABLE"] = "false"
+try:
+    disabled_queue = store.enqueue_topic_regroup()
+    assert disabled_queue is None
+    disabled_result = store.process_background_job(
+        BackgroundJob(
+            job_id="job_topic_disabled",
+            job_type=JOB_TYPE_TOPIC_REGROUP,
+            message_id=0,
+            attempts=1,
+        )
+    )
+    assert disabled_result == []
+finally:
+    os.environ.pop("RAGMEMORY_TOPIC_ENABLE", None)
 
 saved = json.loads(TAXONOMY_PATH.read_text(encoding="utf-8"))
 assert saved["topics"][0]["id"] == "old-topic"

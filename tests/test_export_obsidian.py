@@ -197,7 +197,6 @@ turns = OUT_PATH / "maps/turns.md"
 topic_mirror = OUT_PATH / "topics/mirror.md"
 topic_ragmemory = OUT_PATH / "topics/ragmemory.md"
 topic_c = OUT_PATH / "topics/c.md"
-topic_collision = OUT_PATH / f"topics/c-{module.stable_suffix('c++')}.md"
 file_hub = OUT_PATH / "files/src-ragmemory-memory-py.md"
 profile_hub = OUT_PATH / "profile/user.md"
 topic_singleton = OUT_PATH / "topics/singleton.md"
@@ -214,7 +213,6 @@ assert forgotten_structured.exists()
 assert topic_mirror.exists()
 assert topic_ragmemory.exists()
 assert topic_c.exists()
-assert topic_collision.exists()
 assert file_hub.exists()
 assert profile_hub.exists()
 assert not topic_singleton.exists()
@@ -252,7 +250,6 @@ assert "[[topics/ragmemory]]" in code_text
 assert "[[files/src-ragmemory-memory-py]]" in code_text
 assert "[[topics/mirror]]" in active_structured.read_text(encoding="utf-8")
 assert "[[topics/c]]" in active_structured.read_text(encoding="utf-8")
-assert f"[[topics/c-{module.stable_suffix('c++')}]]" in active_structured.read_text(encoding="utf-8")
 assert "[[topics/singleton]]" not in (OUT_PATH / "active/structured/sm_repeat.md").read_text(encoding="utf-8")
 assert "[[topics/code-reference]]" not in (OUT_PATH / "active/structured/sm_deny.md").read_text(encoding="utf-8")
 assert "[[topics/python]]" not in (OUT_PATH / "active/structured/sm_deny.md").read_text(encoding="utf-8")
@@ -321,7 +318,7 @@ structured_to_hub_edges = [
     edge for edge in all_edges
     if not edge[2]
     and "/structured/" in edge[0]
-    and edge[1].startswith(("topics/", "files/", "profile/"))
+    and edge[1].startswith(("topic_groups/", "topics/", "files/", "profile/"))
 ]
 assert chronology_edges == []
 assert message_to_structured_edges
@@ -339,7 +336,6 @@ mtimes = {
         topic_mirror,
         topic_ragmemory,
         topic_c,
-        topic_collision,
         file_hub,
         profile_hub,
         timeline,
@@ -358,13 +354,14 @@ assert mtimes == {path: path.stat().st_mtime_ns for path in mtimes}
             "generated_at": "2026-01-01T00:00:00+00:00",
             "model": "test-model",
             "source_object_count": 6,
-            "topics": [
+            "source_topic_count": 1,
+            "groups": [
                 {
-                    "id": "curated-mirror",
-                    "title": "Curated mirror",
-                    "description": "Curated mirror topic.",
+                    "id": "memory-graph",
+                    "title": "Memory graph",
+                    "description": "Upper-layer memory graph group.",
                     "aliases": ["mirror"],
-                    "structured_ids": ["sm_active", "sm_repeat"],
+                    "topic_ids": ["mirror", "python"],
                 }
             ],
         },
@@ -375,13 +372,18 @@ assert mtimes == {path: path.stat().st_mtime_ns for path in mtimes}
     encoding="utf-8",
 )
 taxonomy_export = module.export_obsidian(DB_PATH, OUT_PATH, timeline_page_size=2, config_path=CONFIG_PATH)
-assert taxonomy_export["removed"] >= 1
-curated_topic = OUT_PATH / "topics/curated-mirror.md"
-assert curated_topic.exists()
-assert "Curated mirror topic." in curated_topic.read_text(encoding="utf-8")
-assert not topic_mirror.exists()
-assert "[[topics/curated-mirror]]" in active_structured.read_text(encoding="utf-8")
-assert "[[topics/mirror]]" not in active_structured.read_text(encoding="utf-8")
+assert taxonomy_export["written"] >= 2
+topic_group = OUT_PATH / "topic_groups/memory-graph.md"
+assert topic_group.exists()
+topic_group_text = topic_group.read_text(encoding="utf-8")
+assert "Upper-layer memory graph group." in topic_group_text
+assert "[[topics/mirror]]" in topic_group_text
+assert "[[topics/python]]" not in topic_group_text
+assert topic_mirror.exists()
+assert not topic_python.exists()
+active_structured_text = active_structured.read_text(encoding="utf-8")
+assert "[[topics/mirror]]" in active_structured_text
+assert "[[topic_groups/memory-graph]]" in active_structured_text
 
 with sqlite3.connect(DB_PATH / "state.sqlite") as conn:
     conn.execute("UPDATE messages SET tombstoned = 1 WHERE message_id = 1")

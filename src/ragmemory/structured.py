@@ -48,7 +48,7 @@ class StructuredExtractionOptions:
     @classmethod
     def from_env(cls) -> "StructuredExtractionOptions":
         return cls(
-            max_chars=max(1, _env_int("RAGMEMORY_STRUCTURED_MAX_CHARS", DEFAULT_STRUCTURED_MAX_CHARS)),
+            max_chars=max(0, _env_int("RAGMEMORY_STRUCTURED_MAX_CHARS", DEFAULT_STRUCTURED_MAX_CHARS)),
             max_tokens=max(1, _env_int("RAGMEMORY_STRUCTURED_MAX_TOKENS", DEFAULT_STRUCTURED_MAX_TOKENS)),
         )
 
@@ -92,6 +92,7 @@ class StructuredMemoryExtractor:
         return [obj for item in objects if (obj := self._coerce_object(item, role, message_id))]
 
     def _build_prompt(self, role: str, text: str) -> str:
+        message_text = text if self.options.max_chars <= 0 else text[:self.options.max_chars]
         return f"""Role: {role}
 
 Allowed types:
@@ -130,7 +131,7 @@ Return JSON in this exact shape:
 }}
 
 Message:
-{text[:self.options.max_chars]}
+{message_text}
 """
 
     def _parse_json(self, content: str) -> dict:

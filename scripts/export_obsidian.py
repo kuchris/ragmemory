@@ -23,6 +23,7 @@ TIMELINE_PAGE_SIZE = 500
 OBSIDIAN_GRAPH_COLOR_GROUPS = [
     ("path:\"active/messages\"", 0x00C8F0),
     ("path:\"active/structured\"", 0x009688),
+    ("path:\"topic_groups\"", 0x6A5ACD),
     ("path:\"topics\"", 0x9966E6),
     ("path:\"files\"", 0xF36C00),
     ("path:\"profile\"", 0xE44DAD),
@@ -289,6 +290,20 @@ def topic_counts(structured: list[StructuredRow]) -> dict[str, int]:
     return counts
 
 
+def allowed_topic_ids(
+    structured: list[StructuredRow],
+    topic_policy: TopicPolicy,
+    counts: dict[str, int],
+) -> set[str]:
+    allowed = set()
+    for obj in structured:
+        for tag in obj.tags:
+            topic_id = canonical_tag(tag)
+            if topic_id and topic_policy.allows(tag, counts):
+                allowed.add(topic_id)
+    return allowed
+
+
 @dataclass(frozen=True)
 class Hub:
     stem: str
@@ -434,7 +449,11 @@ def load_topic_taxonomy(db_path: Path) -> dict | None:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError:
         return None
-    if not isinstance(data, dict) or not isinstance(data.get("topics"), list):
+    if not isinstance(data, dict):
+        return None
+    if "topics" in data and not isinstance(data.get("topics"), list):
+        return None
+    if "groups" in data and not isinstance(data.get("groups"), list):
         return None
     return data
 
@@ -442,10 +461,13 @@ def load_topic_taxonomy(db_path: Path) -> dict | None:
 def build_taxonomy_topic_hubs(
     taxonomy: dict | None,
     registry: HubRegistry,
-) -> dict[str, list[Hub]] | None:
+    valid_group_topic_ids: set[str] | None = None,
+) -> tuple[dict[str, list[Hub]], dict[str, list[Hub]], dict[str, list[Hub]]] | None:
     if taxonomy is None:
         return None
     by_structured_id: dict[str, list[Hub]] = {}
+    groups_by_topic_id: dict[str, list[Hub]] = {}
+    topics_by_group_stem: dict[str, list[Hub]] = {}
     for topic in taxonomy.get("topics", []):
         if not isinstance(topic, dict):
             continue
@@ -459,16 +481,48 @@ def build_taxonomy_topic_hubs(
             aliases = []
         if not isinstance(structured_ids, list):
             structured_ids = []
+        topic_key = canonical_tag(topic_id)
+        if not topic_key:
+            continue
         hub = registry.add(
             "topic",
-            topic_id,
+            topic_key,
             title=title,
             description=str(topic.get("description", "")).strip(),
             aliases=[str(item) for item in aliases],
         )
         for structured_id in structured_ids:
             by_structured_id.setdefault(str(structured_id), []).append(hub)
-    return by_structured_id
+    for group in taxonomy.get("groups", []):
+        if not isinstance(group, dict):
+            continue
+        group_id = str(group.get("id", "")).strip()
+        title = str(group.get("title", "")).strip()
+        if not group_id or not title:
+            continue
+        aliases = group.get("aliases", [])
+        topic_ids = group.get("topic_ids", group.get("topics", []))
+        if not isinstance(aliases, list):
+            aliases = []
+        if not isinstance(topic_ids, list):
+            topic_ids = []
+        group_hub = registry.add(
+            "topic_group",
+            group_id,
+            title=title,
+            description=str(group.get("description", "")).strip(),
+            aliases=[str(item) for item in aliases],
+        )
+        for topic_id in topic_ids:
+            topic_key = canonical_tag(str(topic_id))
+            if not topic_key:
+                continue
+            if valid_group_topic_ids is not None and topic_key not in valid_group_topic_ids:
+                continue
+            topic_hub = registry.add("topic", topic_key)
+            groups_by_topic_id.setdefault(topic_key, []).append(group_hub)
+            topics_by_group_stem.setdefault(group_hub.stem, []).append(topic_hub)
+    return by_structured_id, groups_by_topic_id, topics_by_group_stem
 
 
 def message_preview(message: MessageRow, limit: int = 120) -> str:
@@ -482,23 +536,26 @@ def hubs_for_structured(
     counts: dict[str, int],
     file_policy: FileHubPolicy,
     taxonomy_topic_hubs: dict[str, list[Hub]] | None = None,
+    taxonomy_group_hubs: dict[str, list[Hub]] | None = None,
     create: bool = False,
 ) -> list[Hub]:
     hubs: list[Hub] = []
     if taxonomy_topic_hubs is not None:
         hubs.extend(taxonomy_topic_hubs.get(obj.id, []))
-    else:
-        seen_tags = set()
-        for tag in sorted(obj.tags, key=lambda value: value.lower()):
-            key = tag.strip().lower()
-            if not key or key in seen_tags:
-                continue
-            seen_tags.add(key)
-            if not topic_policy.allows(tag, counts):
-                continue
-            hub = registry.add("topic", tag) if create else registry.get("topic", tag)
-            if hub:
-                hubs.append(hub)
+    seen_tags = set()
+    for tag in sorted(obj.tags, key=lambda value: value.lower()):
+        key = canonical_tag(tag)
+        seen_key = tag.strip().lower()
+        if not key or not seen_key or seen_key in seen_tags:
+            continue
+        seen_tags.add(seen_key)
+        if not topic_policy.allows(tag, counts):
+            continue
+        hub = registry.add("topic", key, title=tag.strip() or None) if create else registry.get("topic", key)
+        if hub:
+            hubs.append(hub)
+            if taxonomy_group_hubs is not None:
+                hubs.extend(taxonomy_group_hubs.get(key, []))
 
     if obj.type in PROFILE_HUB_TYPES:
         hub = registry.add("profile", "user") if create else registry.get("profile", "user")
@@ -526,6 +583,7 @@ def build_hub_registry(
     counts: dict[str, int],
     file_policy: FileHubPolicy,
     taxonomy_topic_hubs: dict[str, list[Hub]] | None = None,
+    taxonomy_group_hubs: dict[str, list[Hub]] | None = None,
     registry: HubRegistry | None = None,
 ) -> HubRegistry:
     registry = registry or HubRegistry()
@@ -537,12 +595,13 @@ def build_hub_registry(
             counts,
             file_policy,
             taxonomy_topic_hubs=taxonomy_topic_hubs,
+            taxonomy_group_hubs=taxonomy_group_hubs,
             create=True,
         )
     return registry
 
 
-def hub_markdown(hub: Hub) -> str:
+def hub_markdown(hub: Hub, topic_group_members: dict[str, list[Hub]] | None = None) -> str:
     title = hub.title or hub.stem
     parts = [
         frontmatter(
@@ -560,6 +619,13 @@ def hub_markdown(hub: Hub) -> str:
         hub.description or f"Auto-generated `{hub.hub_type}` hub for `{hub.canonical}`.",
         "",
     ]
+    if topic_group_members and hub.hub_type == "topic_group":
+        members = topic_group_members.get(hub.stem, [])
+        if members:
+            parts.extend(["## Topics", ""])
+            for member in members:
+                parts.append(f"- {wikilink(member.stem)}")
+            parts.append("")
     return "\n".join(parts)
 
 
@@ -621,6 +687,7 @@ def structured_markdown(
     counts: dict[str, int],
     file_policy: FileHubPolicy,
     taxonomy_topic_hubs: dict[str, list[Hub]] | None = None,
+    taxonomy_group_hubs: dict[str, list[Hub]] | None = None,
 ) -> str:
     message = message_lookup.get(obj.message_id)
     status = "forgotten" if message and message.tombstoned else "active"
@@ -631,9 +698,11 @@ def structured_markdown(
         counts,
         file_policy,
         taxonomy_topic_hubs=taxonomy_topic_hubs,
+        taxonomy_group_hubs=taxonomy_group_hubs,
         create=False,
     )
     topic_hubs = [hub for hub in hubs if hub.hub_type == "topic"]
+    topic_group_hubs = [hub for hub in hubs if hub.hub_type == "topic_group"]
     file_hubs = [hub for hub in hubs if hub.hub_type == "file"]
     profile_hubs = [hub for hub in hubs if hub.hub_type == "profile"]
     marker = evidence_marker(obj)
@@ -665,6 +734,8 @@ def structured_markdown(
         parts.append(f"- Evidence ref: `{marker}`")
     if topic_hubs:
         parts.append("- Topics: " + ", ".join(wikilink(hub.stem) for hub in topic_hubs))
+    if topic_group_hubs:
+        parts.append("- Topic Groups: " + ", ".join(wikilink(hub.stem) for hub in topic_group_hubs))
     if file_hubs:
         parts.append("- Files: " + ", ".join(wikilink(hub.stem) for hub in file_hubs))
     if profile_hubs:
@@ -944,7 +1015,7 @@ def clean_stale_markdown(root: Path, expected: set[Path]) -> int:
             if path not in expected:
                 path.unlink()
                 removed += 1
-    for folder in ("topics", "files", "profile"):
+    for folder in ("topic_groups", "topics", "files", "profile"):
         base = root / folder
         if not base.exists():
             continue
@@ -972,15 +1043,23 @@ def export_obsidian(
     topic_policy = load_topic_policy(config_path)
     file_policy = load_file_hub_policy(config_path)
     taxonomy = load_topic_taxonomy(db_path)
-    counts = topic_counts(active_structured_rows(structured, message_lookup))
+    active_structured = active_structured_rows(structured, message_lookup)
+    counts = topic_counts(active_structured)
+    valid_group_topic_ids = allowed_topic_ids(active_structured, topic_policy, counts)
     hub_registry = HubRegistry()
-    taxonomy_topic_hubs = build_taxonomy_topic_hubs(taxonomy, hub_registry)
+    taxonomy_hubs = build_taxonomy_topic_hubs(taxonomy, hub_registry, valid_group_topic_ids)
+    taxonomy_topic_hubs: dict[str, list[Hub]] | None = None
+    taxonomy_group_hubs: dict[str, list[Hub]] | None = None
+    topic_group_members: dict[str, list[Hub]] | None = None
+    if taxonomy_hubs is not None:
+        taxonomy_topic_hubs, taxonomy_group_hubs, topic_group_members = taxonomy_hubs
     hub_registry = build_hub_registry(
-        active_structured_rows(structured, message_lookup),
+        active_structured,
         topic_policy,
         counts,
         file_policy,
         taxonomy_topic_hubs=taxonomy_topic_hubs,
+        taxonomy_group_hubs=taxonomy_group_hubs,
         registry=hub_registry,
     )
     messages_by_id = sorted(messages, key=lambda message: message.message_id)
@@ -988,13 +1067,23 @@ def export_obsidian(
     expected: set[Path] = set()
     written = 0
 
-    for folder in ("active/messages", "active/structured", "forgotten/messages", "forgotten/structured", "maps", "topics", "files", "profile"):
+    for folder in (
+        "active/messages",
+        "active/structured",
+        "forgotten/messages",
+        "forgotten/structured",
+        "maps",
+        "topic_groups",
+        "topics",
+        "files",
+        "profile",
+    ):
         (output_path / folder).mkdir(parents=True, exist_ok=True)
 
     for hub in hub_registry.values():
         path = output_path / f"{hub.stem}.md"
         expected.add(path)
-        if write_if_missing(path, hub_markdown(hub)):
+        if write_if_changed(path, hub_markdown(hub, topic_group_members)):
             written += 1
 
     for index, message in enumerate(messages_by_id):
@@ -1021,6 +1110,7 @@ def export_obsidian(
                 counts,
                 file_policy,
                 taxonomy_topic_hubs=taxonomy_topic_hubs,
+                taxonomy_group_hubs=taxonomy_group_hubs,
             ),
         ):
             written += 1

@@ -32,6 +32,10 @@ def main() -> None:
     args = parser.parse_args()
 
     store = MemoryStore(db_path=str(Path(args.db_path)))
+    options = TopicRegroupOptions.from_env()
+    if not options.enabled:
+        print("Topic regroup disabled: set [topic_regroup] enable = true.")
+        return
     if args.queue:
         job_id = store.enqueue_topic_regroup()
         if job_id:
@@ -43,7 +47,6 @@ def main() -> None:
     try:
         path = store.regroup_topics()
     except Exception as exc:
-        options = TopicRegroupOptions.from_env()
         llm_options = build_topic_llm_options(options)
         existing = topic_taxonomy_path(Path(args.db_path))
         print(f"Topic regroup failed: {exc}")
